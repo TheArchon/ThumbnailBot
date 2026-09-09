@@ -331,8 +331,14 @@ class TgCall(PyTgCalls):
 
         finished = queue.get_current(chat_id)
         media = queue.get_next(chat_id)
+
+        # If there is no queued item, generate the autoplay item before
+        # accessing media.message_id.
+        if not media and finished and await db.get_autoplay(chat_id):
+            media = await self._autoplay_next(chat_id, finished)
+
         try:
-            if media.message_id:
+            if media and media.message_id:
                 await app.delete_messages(
                     chat_id=chat_id,
                     message_ids=media.message_id,
@@ -343,10 +349,7 @@ class TgCall(PyTgCalls):
             pass
 
         if not media:
-            if finished and await db.get_autoplay(chat_id):
-                media = await self._autoplay_next(chat_id, finished)
-            if not media:
-                return await self.stop(chat_id)
+            return await self.stop(chat_id)
 
         _lang, msg = await asyncio.gather(
             lang.get_lang(chat_id),
@@ -360,7 +363,7 @@ class TgCall(PyTgCalls):
             # if the API didn't return valid media for this video (rare).
             media.file_path = await yt.stream_url(media.id, video=media.video)
             if not media.file_path:
-                media.file_path, _ = await yt.download(media.id, video=media.video)
+                media.file_path = await yt.download(media.id, video=media.video)
             if not media.file_path:
                 # No retry, no next-track chain — just report the
                 # failure once and stop, exactly one message.

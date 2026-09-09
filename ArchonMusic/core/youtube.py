@@ -3,6 +3,7 @@ import re
 import asyncio
 import aiohttp
 import random
+from urllib.parse import quote
 import yt_dlp
 from py_yt import VideosSearch, Playlist
 from ArchonMusic import logger, config
@@ -156,7 +157,19 @@ class YouTube:
         if not video_id:
             return None
 
-        url = video_id if str(video_id).startswith("http") else f"{self.base}{video_id}"
+        raw_id = str(video_id)
+        # The external download API already handles YouTube extraction on a
+        # server-side IP. Returning its media endpoint first avoids the
+        # YouTube anti-bot challenge seen on Heroku/cloud IPs and lets
+        # ffmpeg/pytgcalls start playback without downloading the whole file.
+        if not video:
+            api_stream = (
+                f"{API_URL}/download?url={quote(raw_id, safe='')}"
+                f"&type=audio&api_key={quote(API_KEY, safe='')}"
+            )
+            return api_stream
+
+        url = raw_id if raw_id.startswith("http") else f"{self.base}{raw_id}"
         cookie = self.get_cookies()
 
         clients = ["web", "android", "tv", "web_safari"]
