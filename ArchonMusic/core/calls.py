@@ -410,18 +410,25 @@ class TgCall(PyTgCalls):
         asyncio.create_task(self._prefetch_next(chat_id))
 
     async def _prefetch_next(self, chat_id: int) -> None:
-        """While the current track plays, pre-resolve the streamable URL
-        for whatever's next in queue so play_next() doesn't have to wait
-        on it later. Best-effort only — any failure here is silent since
-        play_next() will just resolve it fresh if this didn't help."""
+        """Prepare the next manual/autoplay track while current audio plays."""
         try:
             upcoming = queue.get_next(chat_id, check=True)
-        except Exception:
-            return
-        if not upcoming or upcoming.file_path:
-            return
-        try:
-            upcoming.file_path = await yt.stream_url(upcoming.id, video=upcoming.video)
+
+            # IMPORTANT: autoplay must be queued BEFORE StreamEnded fires.
+            # The old prefetch only looked at the manual queue, so when the
+            # queue was empty there was nothing to prepare and autoplay could
+            # stop at the end of the current song.
+            if not upcoming and await db.get_autoplay(chat_id):
+                current = queue.get_current(chat_id)
+                if current:
+                    upcoming = await self._autoplay_next(chat_id, current)
+
+            if not upcoming or upcoming.file_path:
+                return
+
+            upcoming.file_path = await yt.stream_url(
+                upcoming.id, video=upcoming.video
+            )
         except Exception as e:
             logger.warning(f"[_prefetch_next] failed for chat {chat_id}: {e!r}")
 
