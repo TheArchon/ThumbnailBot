@@ -125,7 +125,7 @@ async def play_hndlr(
             # valid media for this video (rare).
             file.file_path = await yt.stream_url(file.id, video=video)
             if not file.file_path:
-                await sent.edit_text(m.lang["play_downloading"])
+                await sent.edit_text("⏳ Pʀᴇᴘᴀʀɪɴɢ sᴛʀᴇᴀᴍ...")
                 file.file_path, _ = await yt.download(file.id, video=video)
 
     await ArchonMusic.play_media(chat_id=m.chat.id, message=sent, media=file)
