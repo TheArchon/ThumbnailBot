@@ -331,6 +331,16 @@ class TgCall(PyTgCalls):
 
         finished = queue.get_current(chat_id)
         media = queue.get_next(chat_id)
+
+        # If the queue became empty, let autoplay create the next track
+        # before touching media.message_id. This also fixes /skip when
+        # autoplay is enabled and there is no manually queued song.
+        if not media and finished and await db.get_autoplay(chat_id):
+            media = await self._autoplay_next(chat_id, finished)
+
+        if not media:
+            return await self.stop(chat_id)
+
         try:
             if media.message_id:
                 await app.delete_messages(
@@ -341,12 +351,6 @@ class TgCall(PyTgCalls):
                 media.message_id = 0
         except Exception:
             pass
-
-        if not media:
-            if finished and await db.get_autoplay(chat_id):
-                media = await self._autoplay_next(chat_id, finished)
-            if not media:
-                return await self.stop(chat_id)
 
         _lang, msg = await asyncio.gather(
             lang.get_lang(chat_id),
@@ -376,18 +380,51 @@ class TgCall(PyTgCalls):
         asyncio.create_task(self._prefetch_next(chat_id))
 
     async def _prefetch_next(self, chat_id: int) -> None:
-        """While the current track plays, pre-resolve the streamable URL
-        for whatever's next in queue so play_next() doesn't have to wait
-        on it later. Best-effort only — any failure here is silent since
-        play_next() will just resolve it fresh if this didn't help."""
+        """Prepare the next song before the current one ends.
+
+        Manual queue items get their direct stream URL resolved in advance.
+        When autoplay is enabled and the manual queue is empty, fetch a
+        related track in the background and resolve its stream URL too.
+        This makes end-of-song autoplay and /skip start much faster.
+        """
         try:
             upcoming = queue.get_next(chat_id, check=True)
-        except Exception:
-            return
-        if not upcoming or upcoming.file_path:
-            return
-        try:
-            upcoming.file_path = await yt.stream_url(upcoming.id, video=upcoming.video)
+
+            # No manually queued song: prepare autoplay now, while the
+            # current song is still playing instead of waiting until the
+            # StreamEnded event.
+            if not upcoming:
+                if not await db.get_autoplay(chat_id):
+                    return
+
+                current = queue.get_current(chat_id)
+                if not current:
+                    return
+
+                history = self.autoplay_history.setdefault(chat_id, set())
+                history.add(current.id)
+
+                upcoming = await yt.autoplay_track(
+                    current.id,
+                    video=getattr(current, "video", False),
+                    exclude=history,
+                )
+                if not upcoming:
+                    return
+
+                # Avoid inserting the same related track repeatedly.
+                if upcoming.id in history:
+                    return
+                history.add(upcoming.id)
+                upcoming.user = "Autoplay"
+                queue.add(chat_id, upcoming)
+
+            if upcoming.file_path:
+                return
+
+            upcoming.file_path = await yt.stream_url(
+                upcoming.id, video=upcoming.video
+            )
         except Exception as e:
             logger.warning(f"[_prefetch_next] failed for chat {chat_id}: {e!r}")
 
