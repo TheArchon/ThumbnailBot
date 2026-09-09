@@ -37,13 +37,8 @@ async def play_hndlr(
     sent = await m.reply_text(m.lang["play_searching"])
 
     file = None
+    mention = m.from_user.mention
     tracks = []
-
-    mention = (
-        m.from_user.mention
-        if m.from_user
-        else "User"
-    )
 
     media = (
         tg.get_media(m.reply_to_message)
@@ -51,19 +46,16 @@ async def play_hndlr(
         else None
     )
 
-    # --------------------------------------------------
-    # REPLIED MEDIA
-    # --------------------------------------------------
+    # Telegram media
     if media:
         setattr(sent, "lang", m.lang)
+
         file = await tg.download(
             m.reply_to_message,
             sent,
         )
 
-    # --------------------------------------------------
     # M3U8
-    # --------------------------------------------------
     elif m3u8:
         file = await tg.process_m3u8(
             url,
@@ -71,11 +63,10 @@ async def play_hndlr(
             video,
         )
 
-    # --------------------------------------------------
     # URL
-    # --------------------------------------------------
     elif url:
 
+        # Playlist
         if "playlist" in url.lower():
             await sent.edit_text(
                 m.lang["playlist_fetch"]
@@ -96,6 +87,7 @@ async def play_hndlr(
             file = tracks.pop(0)
             file.message_id = sent.id
 
+        # Single YouTube URL
         else:
             file = await yt.search(
                 query=url,
@@ -110,9 +102,7 @@ async def play_hndlr(
                 )
             )
 
-    # --------------------------------------------------
-    # SEARCH QUERY
-    # --------------------------------------------------
+    # Search query
     elif len(m.command) >= 2:
 
         query = " ".join(m.command[1:]).strip()
@@ -135,33 +125,25 @@ async def play_hndlr(
                 )
             )
 
-    # --------------------------------------------------
-    # NOTHING FOUND
-    # --------------------------------------------------
+    # Nothing provided
     if not file:
         return await sent.edit_text(
             m.lang["play_usage"]
         )
 
-    # --------------------------------------------------
-    # DURATION LIMIT
-    # --------------------------------------------------
-    duration = getattr(
-        file,
-        "duration_sec",
-        0,
-    ) or 0
+    # Duration check
+    duration_sec = int(
+        getattr(file, "duration_sec", 0) or 0
+    )
 
-    if duration > config.DURATION_LIMIT:
+    if duration_sec > config.DURATION_LIMIT:
         return await sent.edit_text(
             m.lang["play_duration_limit"].format(
                 config.DURATION_LIMIT // 60
             )
         )
 
-    # --------------------------------------------------
-    # LOGGER
-    # --------------------------------------------------
+    # Logger
     if await db.is_logger():
         try:
             await utils.play_log(
@@ -175,18 +157,14 @@ async def play_hndlr(
 
     file.user = mention
 
-    # --------------------------------------------------
-    # FORCE PLAY
-    # --------------------------------------------------
+    # Force play
     if force:
         queue.force_add(
             m.chat.id,
             file,
         )
 
-    # --------------------------------------------------
-    # NORMAL QUEUE
-    # --------------------------------------------------
+    # Normal queue
     else:
         position = queue.add(
             m.chat.id,
@@ -194,19 +172,13 @@ async def play_hndlr(
         )
 
         # Already playing / queued
-        if (
-            position != 0
-            or await db.get_call(m.chat.id)
-        ):
-            queued_title = (
-                file.title
-                or "Unknown"
-            )
+        if position != 0 or await db.get_call(m.chat.id):
+
+            queued_title = file.title or ""
 
             if len(queued_title) > 40:
                 queued_title = (
-                    queued_title[:40].rstrip()
-                    + "..."
+                    queued_title[:40].rstrip() + "..."
                 )
 
             await sent.edit_text(
@@ -224,6 +196,7 @@ async def play_hndlr(
                 ),
             )
 
+            # Add remaining playlist tracks
             if tracks:
                 added = playlist_to_queue(
                     m.chat.id,
@@ -232,63 +205,93 @@ async def play_hndlr(
 
                 await app.send_message(
                     chat_id=m.chat.id,
-                    text=m.lang[
-                        "playlist_queued"
-                    ].format(len(tracks))
-                    + added,
+                    text=m.lang["playlist_queued"].format(
+                        len(tracks)
+                    ) + added,
                 )
 
             return
 
     # --------------------------------------------------
-    # DOWNLOAD / STREAM
+    # Download / stream
     # --------------------------------------------------
-    if not file.file_path:
 
-        extension = (
-            "mp4"
-            if video
-            else "webm"
-        )
+    if not getattr(file, "file_path", None):
 
-        fname = (
+        extension = "mp4" if video else "webm"
+        local_path = (
             f"downloads/{file.id}.{extension}"
         )
 
-        if Path(fname).exists():
-            file.file_path = fname
+        # Existing local file
+        if Path(local_path).exists() and Path(local_path).stat().st_size > 0:
+
+            file.file_path = local_path
 
         else:
+
+            # Try stream URL first
             try:
-                file.file_path = await yt.stream_url(
+                stream_path = await yt.stream_url(
                     file.id,
                     video=video,
                 )
-            except Exception:
-                file.file_path = None
+            except Exception as e:
+                stream_path = None
+                print(
+                    f"[YouTube] stream_url failed: {e}"
+                )
 
-            # Fallback to normal download
-            if not file.file_path:
+            if stream_path:
+                file.file_path = stream_path
+
+            else:
+                # Download
                 await sent.edit_text(
                     m.lang["play_downloading"]
                 )
 
                 try:
-                    file.file_path, _ = (
-                        await yt.download(
-                            file.id,
-                            video=video,
-                        )
+                    result = await yt.download(
+                        file.id,
+                        video=video,
                     )
+
+                    # IMPORTANT:
+                    # yt.download() returns a single path.
+                    # Do NOT use:
+                    # file.file_path, _ = result
+
+                    if isinstance(result, tuple):
+                        file.file_path = (
+                            result[0]
+                            if result
+                            else None
+                        )
+                    else:
+                        file.file_path = result
+
                 except Exception as e:
+                    print(
+                        f"[YouTube] Download failed: {e}"
+                    )
+
                     return await sent.edit_text(
                         f"❌ Download failed:\n"
-                        f"<code>{e}</code>"
+                        f"<code>{str(e)[:1000]}</code>"
+                    )
+
+                if not file.file_path:
+                    return await sent.edit_text(
+                        m.lang["play_not_found"].format(
+                            config.SUPPORT_CHAT
+                        )
                     )
 
     # --------------------------------------------------
-    # PLAY
+    # Start playback
     # --------------------------------------------------
+
     try:
         await ArchonMusic.play_media(
             chat_id=m.chat.id,
@@ -297,14 +300,19 @@ async def play_hndlr(
         )
 
     except Exception as e:
+        print(
+            f"[Play] play_media failed: {e}"
+        )
+
         return await sent.edit_text(
             f"❌ Playback failed:\n"
-            f"<code>{e}</code>"
+            f"<code>{str(e)[:1000]}</code>"
         )
 
     # --------------------------------------------------
-    # PLAYLIST QUEUE
+    # Add remaining playlist songs
     # --------------------------------------------------
+
     if not tracks:
         return
 
@@ -315,8 +323,7 @@ async def play_hndlr(
 
     await app.send_message(
         chat_id=m.chat.id,
-        text=m.lang[
-            "playlist_queued"
-        ].format(len(tracks))
-        + added,
-        )
+        text=m.lang["playlist_queued"].format(
+            len(tracks)
+        ) + added,
+            )
