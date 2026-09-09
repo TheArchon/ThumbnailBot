@@ -47,7 +47,7 @@ lang = Language()
 from ArchonMusic.core.telegram import Telegram
 from ArchonMusic.core.youtube import YouTube
 tg = Telegram()
-yt = YouTube
+yt = YouTube()
 
 from ArchonMusic.helpers import Queue, Thumbnail
 queue = Queue()
