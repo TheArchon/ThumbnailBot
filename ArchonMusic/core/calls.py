@@ -22,6 +22,8 @@ class TgCall(PyTgCalls):
     def __init__(self):
         self.clients = []
         self.autoplay_history: dict[int, set] = {}
+        # Prevent Skip and StreamEnded from advancing the same chat twice.
+        self._next_locks: dict[int, asyncio.Lock] = {}
         self._bot_avatar_path: str | None = None
         # Caches each user's downloaded profile-photo file path after the
         # first lookup. Without this, the SAME user replaying/queuing
@@ -46,6 +48,7 @@ class TgCall(PyTgCalls):
         await db.remove_call(chat_id)
         await db.set_loop(chat_id, 0)
         self.autoplay_history.pop(chat_id, None)
+        self._next_locks.pop(chat_id, None)
 
         try:
             await client.leave_call(chat_id, close=False)
@@ -311,12 +314,23 @@ class TgCall(PyTgCalls):
         history = self.autoplay_history.setdefault(chat_id, set())
         history.add(video_id)
 
-        track = await yt.autoplay_track(
-            video_id,
-            video=getattr(finished, "video", False),
-            exclude=history,
-        )
-        if not track:
+        try:
+            track = await yt.autoplay_track(
+                video_id,
+                video=getattr(finished, "video", False),
+                exclude=history,
+            )
+        except Exception as e:
+            logger.warning(
+                f"[autoplay] recommendation failed | chat_id={chat_id}: {e!r}"
+            )
+            return None
+
+        if not track or not getattr(track, "id", None):
+            return None
+
+        # Never enqueue a recommendation already played in this chat.
+        if track.id in history:
             return None
 
         history.add(track.id)
@@ -325,54 +339,141 @@ class TgCall(PyTgCalls):
 
 
     async def play_next(self, chat_id: int) -> None:
-        if loop := await db.get_loop(chat_id):
-            await db.set_loop(chat_id, loop - 1)
-            return await self.replay(chat_id)
+        """
+        Advance exactly once.
 
-        finished = queue.get_current(chat_id)
-        media = queue.get_next(chat_id)
-        try:
-            if media.message_id:
-                await app.delete_messages(
-                    chat_id=chat_id,
-                    message_ids=media.message_id,
-                    revoke=True,
-                )
-                media.message_id = 0
-        except Exception:
-            pass
+        Both the Telegram Skip button and PyTgCalls StreamEnded event can
+        arrive almost together.  A per-chat lock prevents them from popping
+        two queue items and accidentally skipping an extra song.
+        """
+        lock = self._next_locks.setdefault(chat_id, asyncio.Lock())
 
-        if not media:
-            if finished and await db.get_autoplay(chat_id):
+        if lock.locked():
+            logger.info(
+                f"[play_next] transition already running | chat_id={chat_id}"
+            )
+            return
+
+        async with lock:
+            # Loop mode: replay the current track without changing queue.
+            loop = await db.get_loop(chat_id)
+            if loop:
+                await db.set_loop(chat_id, loop - 1)
+                await self.replay(chat_id)
+                return
+
+            finished = queue.get_current(chat_id)
+
+            # Remove the finished/current item and obtain the next queued item.
+            media = queue.get_next(chat_id)
+
+            if finished and getattr(finished, "id", None):
+                self.autoplay_history.setdefault(chat_id, set()).add(finished.id)
+
+            # Delete the old now-playing message if possible.
+            if finished:
+                old_message_id = getattr(finished, "message_id", None)
+                if old_message_id:
+                    try:
+                        await app.delete_messages(
+                            chat_id=chat_id,
+                            message_ids=old_message_id,
+                            revoke=True,
+                        )
+                    except Exception:
+                        pass
+                    finished.message_id = 0
+
+            # Queue is empty: use autoplay if enabled.
+            if media is None and finished and await db.get_autoplay(chat_id):
                 media = await self._autoplay_next(chat_id, finished)
-            if not media:
+
+            # Nothing else to play.
+            if media is None:
                 return await self.stop(chat_id)
 
-        _lang, msg = await asyncio.gather(
-            lang.get_lang(chat_id),
-            app.send_message(chat_id=chat_id, text="Loading..."),
-        )
+            _lang, msg = await asyncio.gather(
+                lang.get_lang(chat_id),
+                app.send_message(chat_id=chat_id, text="Loading..."),
+            )
 
-        if not media.file_path:
-            # Stream directly from the download API's URL — ffmpeg plays
-            # off it directly, so this is near-instant vs. waiting for a
-            # full download to disk. Falls back to a full download() only
-            # if the API didn't return valid media for this video (rare).
-            media.file_path = await yt.stream_url(media.id, video=media.video)
+            # Resolve the media path. Prefer direct streaming; download only
+            # when a direct stream URL is unavailable.
+            if not getattr(media, "file_path", None):
+                try:
+                    media.file_path = await yt.stream_url(
+                        media.id,
+                        video=media.video,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"[play_next] stream_url failed | chat_id={chat_id}: {e!r}"
+                    )
+                    media.file_path = None
+
             if not media.file_path:
-                media.file_path, _ = await yt.download(media.id, video=media.video)
+                try:
+                    result = await yt.download(
+                        media.id,
+                        video=media.video,
+                    )
+
+                    # Support both old `(path, extra)` and new `path` returns.
+                    if isinstance(result, tuple):
+                        media.file_path = result[0] if result else None
+                    else:
+                        media.file_path = result
+                except Exception as e:
+                    logger.error(
+                        f"[play_next] download failed | chat_id={chat_id}: {e!r}"
+                    )
+                    media.file_path = None
+
             if not media.file_path:
-                # No retry, no next-track chain — just report the
-                # failure once and stop, exactly one message.
-                await msg.edit_text(
-                    _lang["error_no_file"].format(config.SUPPORT_CHAT)
-                )
-                return await self.stop(chat_id)
+                try:
+                    await msg.edit_text(
+                        _lang["error_no_file"].format(config.SUPPORT_CHAT)
+                    )
+                except Exception:
+                    pass
 
-        await msg.edit_text(_lang["play_next"])
+                # Try one more autoplay recommendation instead of killing
+                # autoplay immediately when a single recommendation fails.
+                if await db.get_autoplay(chat_id) and finished:
+                    retry = await self._autoplay_next(chat_id, finished)
+                    if retry and retry.id != getattr(media, "id", None):
+                        try:
+                            await msg.delete()
+                        except Exception:
+                            pass
+                        # Avoid recursive transition loops; resolve one retry
+                        # directly.
+                        media = retry
+                        try:
+                            media.file_path = await yt.stream_url(
+                                media.id,
+                                video=media.video,
+                            )
+                        except Exception:
+                            media.file_path = None
 
-        media.message_id = msg.id
-        await self.play_media(chat_id, msg, media)
+                if not getattr(media, "file_path", None):
+                    return await self.stop(chat_id)
+
+            try:
+                await msg.edit_text(_lang["play_next"])
+            except Exception:
+                pass
+
+            media.message_id = msg.id
+
+            await self.play_media(
+                chat_id,
+                msg,
+                media,
+            )
+
+        # Prefetch outside the transition lock so it never blocks Skip.
         asyncio.create_task(self._prefetch_next(chat_id))
 
     async def _prefetch_next(self, chat_id: int) -> None:
@@ -380,6 +481,10 @@ class TgCall(PyTgCalls):
         for whatever's next in queue so play_next() doesn't have to wait
         on it later. Best-effort only — any failure here is silent since
         play_next() will just resolve it fresh if this didn't help."""
+        lock = self._next_locks.get(chat_id)
+        if lock and lock.locked():
+            return
+
         try:
             upcoming = queue.get_next(chat_id, check=True)
         except Exception:
@@ -448,3 +553,4 @@ class TgCall(PyTgCalls):
             self.clients.append(client)
             await self.decorators(client)
         logger.info("PyTgCalls client(s) started.")
+      
