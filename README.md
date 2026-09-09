@@ -4,7 +4,7 @@ Telegram Music Player Bot built with Python, Pyrogram/Kurigram and Py-TGCALLS.
 
 ## 🚀 One-Click Heroku Hosting
 
-[![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/TeamArchon/ArchonMusic)
+[![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/Yewsdhi/NEWQUEENBOTREPO)
 
 ### Required variables
 
