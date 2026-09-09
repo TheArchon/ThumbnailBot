@@ -238,12 +238,27 @@ class YouTube:
         return None
 
     async def autoplay_track(
-        self, video_id: str, video: bool = False, exclude=None
+        self,
+        video_id: str,
+        video: bool = False,
+        exclude=None,
+        title: str | None = None,
+        channel_name: str | None = None,
     ) -> Track | None:
-        """Compatibility wrapper for the call layer's autoplay interface."""
+        """Return a related track for autoplay.
+
+        The title/channel are passed from the currently playing Track so the
+        search fallback can still work when YouTube's RD mix endpoint is
+        blocked on Heroku/cloud IPs.
+        """
         if not video_id:
             return None
-        current = Track(id=video_id, video=video)
+        current = Track(
+            id=video_id,
+            video=video,
+            title=title or "",
+            channel_name=channel_name or "",
+        )
         return await self.get_related(current, played=list(exclude or []))
 
     async def playlist(self, limit: int, user: str, url: str, video: bool) -> list[Track]:

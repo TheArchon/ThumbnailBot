@@ -194,7 +194,7 @@ class TgCall(PyTgCalls):
             await client.play(
                 chat_id=chat_id,
                 stream=stream,
-                config=types.GroupCallConfig(auto_start=False),
+                config=types.GroupCallConfig(auto_start=True),
             )
             if not seek_time:
                 media.time = 1
@@ -338,6 +338,8 @@ class TgCall(PyTgCalls):
                 video_id,
                 video=getattr(finished, "video", False),
                 exclude=history,
+                title=getattr(finished, "title", None),
+                channel_name=getattr(finished, "channel_name", None),
             )
             if not track:
                 return None
