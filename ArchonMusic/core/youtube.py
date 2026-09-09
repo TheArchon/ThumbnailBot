@@ -10,7 +10,7 @@ from ArchonMusic.helpers import Track, utils
 
 API_URL = os.environ.get("SHRUTI_API_URL", "https://api.shrutibots.site")
 
-API_KEY = os.environ.get("SHRUTI_API_KEY", "ShrutiBotsfhGT4c09sFRRuQIB6yCG") ## Get This API KEY FROM TELEGRAM BOT USERNAME: @SHRUTIAPIBOT
+API_KEY = os.environ.get("SHRUTI_API_KEY", "ShrutiBotsg3j1kfPzAV3zj6aoqnUr") ## Get This API KEY FROM TELEGRAM BOT USERNAME: @SHRUTIAPIBOT
 
 DOWNLOAD_DIR = "downloads"
 
@@ -116,7 +116,13 @@ class YouTube:
         logger.info(f"Cookies saved in {self.cookie_dir}.")
 
     def valid(self, url: str) -> bool:
+        if not url:
+            return False
         return bool(re.match(self.regex, url))
+
+    def invalid(self, url: str) -> bool:
+        """Compatibility helper used by the /play URL validator."""
+        return not self.valid(url)
 
     async def search(self, query: str, m_id: int, video: bool = False) -> Track | None:
         try:
@@ -139,6 +145,90 @@ class YouTube:
         except Exception as e:
             logger.error(f"Search error: {e}")
         return None
+
+    async def stream_url(self, video_id: str, video: bool = False) -> str | None:
+        """Resolve a direct YouTube media URL for fast playback.
+
+        This is intentionally download=False: ffmpeg/pytgcalls can start
+        reading the remote stream immediately instead of waiting for the
+        complete file to download. If YouTube blocks extraction, callers
+        fall back to the Shruti download API.
+        """
+        if not video_id:
+            return None
+
+        url = video_id if str(video_id).startswith("http") else f"{self.base}{video_id}"
+        opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "noplaylist": True,
+            "geo_bypass": True,
+            "socket_timeout": 10,
+            "retries": 1,
+            "extractor_retries": 1,
+            "format": "bestvideo+bestaudio/best" if video else "bestaudio/best",
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["android", "web"],
+                }
+            },
+        }
+        cookie = self.get_cookies()
+        if cookie:
+            opts["cookiefile"] = cookie
+
+        def extract():
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if not info:
+                    return None
+
+                direct = info.get("url")
+                if direct:
+                    return direct
+
+                formats = info.get("formats") or []
+                if video:
+                    candidates = [
+                        f for f in formats
+                        if f.get("url") and (f.get("vcodec") not in (None, "none"))
+                    ]
+                else:
+                    candidates = [
+                        f for f in formats
+                        if f.get("url") and f.get("acodec") not in (None, "none")
+                    ]
+
+                if not candidates:
+                    return None
+                candidates.sort(
+                    key=lambda f: (
+                        int(f.get("abr") or 0),
+                        int(f.get("tbr") or 0),
+                        int(f.get("height") or 0),
+                    ),
+                    reverse=True,
+                )
+                return candidates[0].get("url")
+
+        try:
+            return await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(None, extract),
+                timeout=20,
+            )
+        except Exception as e:
+            logger.warning(f"[YouTube] Direct stream failed for {video_id}: {e}")
+            return None
+
+    async def autoplay_track(
+        self, video_id: str, video: bool = False, exclude=None
+    ) -> Track | None:
+        """Compatibility wrapper for the call layer's autoplay interface."""
+        if not video_id:
+            return None
+        current = Track(id=video_id, video=video)
+        return await self.get_related(current, played=list(exclude or []))
 
     async def playlist(self, limit: int, user: str, url: str, video: bool) -> list[Track]:
         tracks = []
@@ -330,4 +420,4 @@ class YouTube:
 
         logger.warning(f"[Autoplay] No related track found for {current.id}.")
         return None
-                
+        
