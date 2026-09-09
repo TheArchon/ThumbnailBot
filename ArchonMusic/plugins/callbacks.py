@@ -90,7 +90,8 @@ async def _controls(_, query: types.CallbackQuery):
         if not media.file_path:
             media.file_path = await yt.stream_url(media.id, video=media.video)
             if not media.file_path:
-                media.file_path, _ = await yt.download(media.id, video=media.video)
+                result = await yt.download(media.id, video=media.video)
+            media.file_path = result[0] if isinstance(result, tuple) else result
         media.message_id = msg.id
         return await ArchonMusic.play_media(chat_id, msg, media)
 
@@ -255,4 +256,5 @@ async def _settings_cb(_, query: types.CallbackQuery):
             _language,
             chat_id,
         )
-    )
+            )
+                
