@@ -330,3 +330,4 @@ class YouTube:
 
         logger.warning(f"[Autoplay] No related track found for {current.id}.")
         return None
+                
