@@ -147,79 +147,82 @@ class YouTube:
         return None
 
     async def stream_url(self, video_id: str, video: bool = False) -> str | None:
-        """Resolve a direct YouTube media URL for fast playback.
+        """Resolve a direct media URL for immediate playback.
 
-        This is intentionally download=False: ffmpeg/pytgcalls can start
-        reading the remote stream immediately instead of waiting for the
-        complete file to download. If YouTube blocks extraction, callers
-        fall back to the Shruti download API.
+        Try a few YouTube player clients because one client can fail while
+        another still exposes a playable direct URL. No full download is
+        performed here; ffmpeg/pytgcalls streams the returned URL directly.
         """
         if not video_id:
             return None
 
         url = video_id if str(video_id).startswith("http") else f"{self.base}{video_id}"
-        opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "noplaylist": True,
-            "geo_bypass": True,
-            "socket_timeout": 10,
-            "retries": 1,
-            "extractor_retries": 1,
-            "format": "bestvideo+bestaudio/best" if video else "bestaudio/best",
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["android", "web"],
-                }
-            },
-        }
         cookie = self.get_cookies()
-        if cookie:
-            opts["cookiefile"] = cookie
 
-        def extract():
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                if not info:
-                    return None
+        clients = ["web", "android", "tv", "web_safari"]
+        for client in clients:
+            opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "skip_download": True,
+                "noplaylist": True,
+                "geo_bypass": True,
+                "socket_timeout": 8,
+                "retries": 1,
+                "extractor_retries": 1,
+                "format": (
+                    "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+                    if video else
+                    "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best"
+                ),
+                "extractor_args": {
+                    "youtube": {"player_client": [client]},
+                },
+            }
+            if cookie:
+                opts["cookiefile"] = cookie
 
-                direct = info.get("url")
-                if direct:
-                    return direct
+            def extract():
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    if not info:
+                        return None
+                    direct = info.get("url")
+                    if direct:
+                        return direct
+                    formats = info.get("formats") or []
+                    if video:
+                        candidates = [
+                            f for f in formats
+                            if f.get("url") and f.get("vcodec") not in (None, "none")
+                        ]
+                    else:
+                        candidates = [
+                            f for f in formats
+                            if f.get("url") and f.get("acodec") not in (None, "none")
+                        ]
+                    candidates.sort(
+                        key=lambda f: (
+                            float(f.get("abr") or 0),
+                            float(f.get("tbr") or 0),
+                            int(f.get("height") or 0),
+                        ),
+                        reverse=True,
+                    )
+                    return candidates[0].get("url") if candidates else None
 
-                formats = info.get("formats") or []
-                if video:
-                    candidates = [
-                        f for f in formats
-                        if f.get("url") and (f.get("vcodec") not in (None, "none"))
-                    ]
-                else:
-                    candidates = [
-                        f for f in formats
-                        if f.get("url") and f.get("acodec") not in (None, "none")
-                    ]
-
-                if not candidates:
-                    return None
-                candidates.sort(
-                    key=lambda f: (
-                        int(f.get("abr") or 0),
-                        int(f.get("tbr") or 0),
-                        int(f.get("height") or 0),
-                    ),
-                    reverse=True,
+            try:
+                direct = await asyncio.wait_for(
+                    asyncio.get_running_loop().run_in_executor(None, extract),
+                    timeout=12,
                 )
-                return candidates[0].get("url")
+                if direct:
+                    logger.info(f"[YouTube] Direct stream ready via {client}: {video_id}")
+                    return direct
+            except Exception as e:
+                logger.warning(f"[YouTube] stream client {client} failed for {video_id}: {e}")
 
-        try:
-            return await asyncio.wait_for(
-                asyncio.get_running_loop().run_in_executor(None, extract),
-                timeout=20,
-            )
-        except Exception as e:
-            logger.warning(f"[YouTube] Direct stream failed for {video_id}: {e}")
-            return None
+        return None
 
     async def autoplay_track(
         self, video_id: str, video: bool = False, exclude=None
