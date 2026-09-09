@@ -1,6 +1,6 @@
 {
   "name": "ArchonMusic",
-  "description": "A professional Telegram Music Player Bot built with Python, Pyrogram, and Py-TGCALLS.",
+  "description": "Telegram Music Player Bot - one-click Heroku deployment.",
   "logo": "https://graph.org/file/3fe8a3d51d509a37153fa-9dd99a39c2ae5fb52f.jpg",
   "keywords": [
     "python3",
@@ -44,6 +44,12 @@
       "description": "Pyrogram v2 String Session. Generate one using @StringFatherBot on Telegram.",
       "value": "",
       "required": true
+    }
+  },
+  "formation": {
+    "worker": {
+      "quantity": 1,
+      "size": "basic"
     }
   }
 }
