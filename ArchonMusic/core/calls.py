@@ -22,6 +22,8 @@ class TgCall(PyTgCalls):
     def __init__(self):
         self.clients = []
         self.autoplay_history: dict[int, set] = {}
+        self._autoplay_locks: dict[int, asyncio.Lock] = {}
+        self._next_locks: dict[int, asyncio.Lock] = {}
         self._bot_avatar_path: str | None = None
         # Caches each user's downloaded profile-photo file path after the
         # first lookup. Without this, the SAME user replaying/queuing
@@ -46,6 +48,8 @@ class TgCall(PyTgCalls):
         await db.remove_call(chat_id)
         await db.set_loop(chat_id, 0)
         self.autoplay_history.pop(chat_id, None)
+        self._autoplay_locks.pop(chat_id, None)
+        self._next_locks.pop(chat_id, None)
 
         try:
             await client.leave_call(chat_id, close=False)
@@ -202,6 +206,9 @@ class TgCall(PyTgCalls):
                 asyncio.create_task(
                     self._send_now_playing(chat_id, message, media, _lang)
                 )
+                # Prepare the next queued/autoplay track while this one is
+                # playing, so /skip and automatic transition are immediate.
+                asyncio.create_task(self._prefetch_next(chat_id))
         except FileNotFoundError:
             await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
             await self.stop(chat_id)
@@ -304,27 +311,51 @@ class TgCall(PyTgCalls):
 
 
     async def _autoplay_next(self, chat_id: int, finished) -> "Track | None":
+        """Ensure one autoplay track is queued and return it.
+
+        This is guarded because StreamEnded and a manual /skip can arrive
+        close together. Re-checking the queue inside the lock prevents two
+        autoplay songs from being inserted for the same finished track.
+        """
+        existing = queue.get_next(chat_id, check=True)
+        if existing:
+            return existing
+
         video_id = getattr(finished, "id", None)
         if not video_id:
             return None
 
-        history = self.autoplay_history.setdefault(chat_id, set())
-        history.add(video_id)
+        lock = self._autoplay_locks.setdefault(chat_id, asyncio.Lock())
+        async with lock:
+            existing = queue.get_next(chat_id, check=True)
+            if existing:
+                return existing
 
-        track = await yt.autoplay_track(
-            video_id,
-            video=getattr(finished, "video", False),
-            exclude=history,
-        )
-        if not track:
-            return None
+            history = self.autoplay_history.setdefault(chat_id, set())
+            history.add(video_id)
 
-        history.add(track.id)
-        queue.add(chat_id, track)
-        return queue.get_current(chat_id)
+            track = await yt.autoplay_track(
+                video_id,
+                video=getattr(finished, "video", False),
+                exclude=history,
+            )
+            if not track:
+                return None
+
+            history.add(track.id)
+            track.user = "Autoplay"
+            queue.add(chat_id, track)
+            return track
 
 
     async def play_next(self, chat_id: int) -> None:
+        lock = self._next_locks.setdefault(chat_id, asyncio.Lock())
+        if lock.locked():
+            return
+        async with lock:
+            await self._play_next(chat_id)
+
+    async def _play_next(self, chat_id: int) -> None:
         if loop := await db.get_loop(chat_id):
             await db.set_loop(chat_id, loop - 1)
             return await self.replay(chat_id)
