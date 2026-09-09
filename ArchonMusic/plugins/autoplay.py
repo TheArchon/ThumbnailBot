@@ -27,3 +27,4 @@ async def _autoplay(_, m: types.Message):
         return await m.reply_text(m.lang["autoplay_disabled"])
 
     return await m.reply_text(m.lang["autoplay_usage"])
+    
