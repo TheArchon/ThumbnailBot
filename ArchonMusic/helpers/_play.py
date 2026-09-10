@@ -110,11 +110,13 @@ def checkUB(play):
                 await umm.delete()
                 await client.resolve_peer(chat_id)
 
-        if await db.get_cmd_delete(chat_id):
-            try:
-                await m.delete()
-            except Exception:
-                pass
+        # Always delete the user's /play command (e.g. /play song name)
+        # before starting playback. This no longer depends on the
+        # per-chat cmd_delete database setting.
+        try:
+            await m.delete()
+        except Exception:
+            pass
 
         return await play(_, m, force, m3u8, video, url)
 
