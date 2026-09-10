@@ -384,30 +384,41 @@ class YouTube:
     async def _related_from_search(
         self, current: Track, played: set[str]
     ) -> Track | None:
-        """Fallback used when YouTube blocks the mix-playlist scrape (common on
-        server/cloud IPs without cookies). Reuses the same search backend that
-        already powers /play, so it works wherever normal search works."""
-        queries = []
-        if current.channel_name:
-            queries.append(f"{current.channel_name}")
-        if current.title:
-            queries.append(f"{current.title}")
+        """Find a genuinely different autoplay track.
 
-        # Search the title first; channel-only search frequently returns the
-        # exact song currently playing, which made /skip appear to repeat it.
-        queries = list(dict.fromkeys(reversed(queries)))
+        Search returns several candidates, so do not blindly take the first
+        result. Exclude every ID already played/queued and prefer a different
+        title from the current song. This prevents /skip and autoplay from
+        repeatedly selecting the same result.
+        """
+        queries = []
+        title = (current.title or "").strip()
+        channel = (current.channel_name or "").strip()
+        if title and channel:
+            queries.append(f"{title} {channel} songs")
+        if title:
+            queries.append(f"{title} related songs")
+        if channel:
+            queries.append(f"{channel} songs")
+        queries = list(dict.fromkeys(q for q in queries if q))
+
+        current_id = str(current.id)
+        played_ids = {str(x) for x in played}
+        played_ids.add(current_id)
+        current_title = re.sub(r"\W+", " ", title.lower()).strip()
+        candidates = []
+        seen = set(played_ids)
 
         for query in queries:
             try:
-                _search = VideosSearch(query, limit=10)
-                results = await _search.next()
+                results = await VideosSearch(query, limit=20).next()
             except Exception as e:
                 logger.error(f"[Autoplay] Search fallback failed for {query!r}: {e}")
                 continue
 
             for data in (results or {}).get("result", []):
-                eid = data.get("id")
-                if not eid or eid in played:
+                eid = str(data.get("id") or "")
+                if not eid or eid in seen:
                     continue
 
                 duration_str = data.get("duration")
@@ -415,19 +426,30 @@ class YouTube:
                 if not duration_sec or duration_sec > config.DURATION_LIMIT:
                     continue
 
-                return Track(
+                result_title = (data.get("title") or "Unknown").strip()
+                normalized_title = re.sub(r"\W+", " ", result_title.lower()).strip()
+                if normalized_title == current_title:
+                    continue
+
+                seen.add(eid)
+                candidates.append(Track(
                     id=eid,
                     channel_name=data.get("channel", {}).get("name") or "YouTube",
                     duration=duration_str,
                     duration_sec=duration_sec,
-                    title=(data.get("title") or "Unknown")[:25],
+                    title=result_title[:25],
                     thumbnail=(data.get("thumbnails", [{}])[-1].get("url") or "").split("?")[0] or None,
                     url=data.get("link"),
                     view_count=data.get("viewCount", {}).get("short"),
                     video=False,
-                )
+                ))
 
-        return None
+        if not candidates:
+            return None
+
+        # Randomly choose among valid unique candidates so autoplay does not
+        # follow the same search-result order every time.
+        return random.choice(candidates[:15])
 
     async def get_related(
         self, current: Track, played: list[str] | None = None
