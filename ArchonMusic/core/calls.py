@@ -332,19 +332,29 @@ class TgCall(PyTgCalls):
                 return existing
 
             history = self.autoplay_history.setdefault(chat_id, set())
-            history.add(video_id)
+            history.add(str(video_id))
+
+            # Exclude every track already present in the queue as well.
+            # This prevents /skip from selecting the same autoplay track again
+            # when the provider returns a duplicate result.
+            queued_ids = {str(item.id) for item in queue.get_queue(chat_id) if getattr(item, "id", None)}
+            exclude = history | queued_ids
 
             track = await yt.autoplay_track(
                 video_id,
                 video=getattr(finished, "video", False),
-                exclude=history,
+                exclude=exclude,
                 title=getattr(finished, "title", None),
                 channel_name=getattr(finished, "channel_name", None),
             )
             if not track:
                 return None
 
-            history.add(track.id)
+            # Never insert the currently playing/queued track again.
+            if str(track.id) in exclude:
+                return None
+
+            history.add(str(track.id))
             track.user = "Autoplay"
             queue.add(chat_id, track)
             return track

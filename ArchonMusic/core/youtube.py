@@ -393,9 +393,13 @@ class YouTube:
         if current.title:
             queries.append(f"{current.title}")
 
+        # Search the title first; channel-only search frequently returns the
+        # exact song currently playing, which made /skip appear to repeat it.
+        queries = list(dict.fromkeys(reversed(queries)))
+
         for query in queries:
             try:
-                _search = VideosSearch(query, limit=8)
+                _search = VideosSearch(query, limit=10)
                 results = await _search.next()
             except Exception as e:
                 logger.error(f"[Autoplay] Search fallback failed for {query!r}: {e}")
