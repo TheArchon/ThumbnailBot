@@ -365,14 +365,24 @@ class TgCall(PyTgCalls):
             normalized_track_title = re.sub(
                 r"\W+", " ", str(getattr(track, "title", "") or "").lower()
             ).strip()
-            if str(track.id) in exclude or (
-                normalized_track_title and normalized_track_title in exclude_titles
-            ):
+            if str(track.id) in exclude:
                 return None
+
+            # youtube.py already performs fuzzy same-song filtering. Keep a
+            # second guard here so a different video ID cannot slip through
+            # because of a slightly different upload title.
+            try:
+                if any(yt._same_song(track.title, old) for old in exclude_titles if old):
+                    return None
+            except Exception:
+                if normalized_track_title and normalized_track_title in exclude_titles:
+                    return None
 
             history.add(str(track.id))
             if normalized_track_title:
                 title_history.add(normalized_track_title)
+            if getattr(track, "title", None):
+                title_history.add(track.title)
             track.user = "Autoplay"
             queue.add(chat_id, track)
             return track

@@ -3,6 +3,7 @@ import re
 import asyncio
 import aiohttp
 import random
+from difflib import SequenceMatcher
 from urllib.parse import quote
 import yt_dlp
 from py_yt import VideosSearch, Playlist
@@ -137,7 +138,7 @@ class YouTube:
                     duration=data.get("duration"),
                     duration_sec=utils.to_seconds(data.get("duration")) if data.get("duration") else 0,
                     message_id=m_id,
-                    title=data.get("title")[:25],
+                    title=(data.get("title") or "")[:80],
                     thumbnail=data.get("thumbnails", [{}])[-1].get("url").split("?")[0],
                     url=data.get("link"),
                     view_count=data.get("viewCount", {}).get("short"),
@@ -276,7 +277,7 @@ class YouTube:
                     channel_name=data.get("channel", {}).get("name", ""),
                     duration=data.get("duration"),
                     duration_sec=utils.to_seconds(data.get("duration")) if data.get("duration") else 0,
-                    title=data.get("title")[:25],
+                    title=(data.get("title") or "")[:80],
                     thumbnail=data.get("thumbnails", [{}])[-1].get("url").split("?")[0],
                     url=data.get("link").split("&list=")[0],
                     user=user,
@@ -381,7 +382,7 @@ class YouTube:
                 channel_name=entry.get("channel") or entry.get("uploader") or "YouTube",
                 duration=self._format_duration(duration),
                 duration_sec=duration,
-                title=title[:25],
+                title=title[:80],
                 thumbnail=thumbnail,
                 url=f"https://www.youtube.com/watch?v={eid}",
                 view_count=self._format_views(entry.get("view_count")),
@@ -390,47 +391,95 @@ class YouTube:
 
         return None
 
+    @staticmethod
+    def _norm_title(value: str) -> str:
+        """Normalize a YouTube title for duplicate-song detection."""
+        value = str(value or "").lower()
+        # Remove common upload labels which make the same song look different.
+        value = re.sub(
+            r"\b(official\s*(music\s*)?video|official\s*audio|lyrics?|lyric\s*video|full\s*(song|video)|hd|4k|8k|audio|video|remaster(?:ed)?|reupload|original\s*song|dj\s*mix|extended|slowed(?:\s*\+\s*reverb)?|speed\s*up|sped\s*up)\b",
+            " ",
+            value,
+        )
+        value = re.sub(r"\[[^\]]*\]|\([^)]*\)", " ", value)
+        return re.sub(r"[^a-z0-9]+", " ", value).strip()
+
+    @classmethod
+    def _same_song(cls, a: str, b: str) -> bool:
+        """Return True when two YouTube titles are probably the same song."""
+        a = cls._norm_title(a)
+        b = cls._norm_title(b)
+        if not a or not b:
+            return False
+        if a == b:
+            return True
+        # Catch titles such as "Song | Artist" vs "Song - Official Audio".
+        if len(a) >= 12 and len(b) >= 12 and (a in b or b in a):
+            return True
+        at, bt = set(a.split()), set(b.split())
+        if len(at) >= 3 and len(bt) >= 3:
+            overlap = len(at & bt) / min(len(at), len(bt))
+            if overlap >= 0.80:
+                return True
+        return SequenceMatcher(None, a, b).ratio() >= 0.84
+
     async def _related_from_search(
         self, current: Track, played: set[str], played_titles: set[str]
     ) -> Track | None:
-        """Find a genuinely different autoplay track.
+        """Find a genuinely different autoplay song.
 
-        Search returns several candidates, so do not blindly take the first
-        result. Exclude every ID already played/queued and prefer a different
-        title from the current song. This prevents /skip and autoplay from
-        repeatedly selecting the same result.
+        Do not rely on the first YouTube result. Search several candidates and
+        reject both previously-used IDs and titles that are merely another
+        upload/remix of a song already played.
         """
-        queries = []
         title = (current.title or "").strip()
         channel = (current.channel_name or "").strip()
-        if title and channel:
-            queries.append(f"{title} {channel} songs")
-        if title:
-            queries.append(f"{title} related songs")
+
+        # Current-title search is useful, but it tends to return the same song
+        # in multiple uploads. Channel/general searches are also used so that
+        # autoplay can move to a genuinely different track.
+        queries = []
         if channel:
             queries.append(f"{channel} songs")
-        queries = list(dict.fromkeys(q for q in queries if q))
+            queries.append(f"{channel} best songs")
+        if title:
+            queries.append(f"{title} similar songs")
+        queries.append("90s hindi songs")
+        queries = list(dict.fromkeys(q.strip() for q in queries if q.strip()))
 
         current_id = str(current.id)
         played_ids = {str(x) for x in played}
         played_ids.add(current_id)
-        current_title = re.sub(r"\W+", " ", title.lower()).strip()
-        played_titles = {re.sub(r"\W+", " ", str(x).lower()).strip() for x in played_titles if x}
-        if current_title:
-            played_titles.add(current_title)
+        blocked_titles = {
+            self._norm_title(x) for x in (played_titles or set()) if x
+        }
+        current_norm = self._norm_title(title)
+        if current_norm:
+            blocked_titles.add(current_norm)
+
         candidates = []
-        seen = set(played_ids)
+        seen_ids = set(played_ids)
+        seen_titles = set(blocked_titles)
 
         for query in queries:
             try:
                 results = await VideosSearch(query, limit=20).next()
             except Exception as e:
-                logger.error(f"[Autoplay] Search fallback failed for {query!r}: {e}")
+                logger.warning(f"[Autoplay] Search failed for {query!r}: {e!r}")
                 continue
 
             for data in (results or {}).get("result", []):
                 eid = str(data.get("id") or "")
-                if not eid or eid in seen:
+                if not eid or eid in seen_ids:
+                    continue
+
+                result_title = (data.get("title") or "Unknown").strip()
+                norm = self._norm_title(result_title)
+                if not norm or self._same_song(result_title, title):
+                    continue
+
+                # Compare against every played title, not just exact strings.
+                if any(self._same_song(result_title, old) for old in blocked_titles):
                     continue
 
                 duration_str = data.get("duration")
@@ -438,30 +487,31 @@ class YouTube:
                 if not duration_sec or duration_sec > config.DURATION_LIMIT:
                     continue
 
-                result_title = (data.get("title") or "Unknown").strip()
-                normalized_title = re.sub(r"\W+", " ", result_title.lower()).strip()
-                if normalized_title in played_titles or normalized_title == current_title:
-                    continue
-
-                seen.add(eid)
-                candidates.append(Track(
-                    id=eid,
-                    channel_name=data.get("channel", {}).get("name") or "YouTube",
-                    duration=duration_str,
-                    duration_sec=duration_sec,
-                    title=result_title[:25],
-                    thumbnail=(data.get("thumbnails", [{}])[-1].get("url") or "").split("?")[0] or None,
-                    url=data.get("link"),
-                    view_count=data.get("viewCount", {}).get("short"),
-                    video=False,
-                ))
+                seen_ids.add(eid)
+                seen_titles.add(norm)
+                thumbs = data.get("thumbnails") or []
+                thumbnail = (thumbs[-1].get("url") or "").split("?")[0] if thumbs else None
+                candidates.append(
+                    Track(
+                        id=eid,
+                        channel_name=data.get("channel", {}).get("name") or "YouTube",
+                        duration=duration_str,
+                        duration_sec=duration_sec,
+                        title=result_title[:80],
+                        thumbnail=thumbnail,
+                        url=data.get("link"),
+                        view_count=data.get("viewCount", {}).get("short"),
+                        video=False,
+                    )
+                )
 
         if not candidates:
             return None
 
-        # Randomly choose among valid unique candidates so autoplay does not
-        # follow the same search-result order every time.
-        return random.choice(candidates[:15])
+        # Shuffle the valid pool instead of repeatedly selecting the same
+        # search ordering.
+        random.shuffle(candidates)
+        return candidates[0]
 
     async def get_related(
         self,
@@ -469,12 +519,38 @@ class YouTube:
         played: list[str] | None = None,
         played_titles: set[str] | None = None,
     ) -> Track | None:
-        """Fetch the next autoplay track, skipping anything already played in
-        this session. Tries YouTube's related mix first, falling back to a
-        text search (same backend as /play) if the mix is blocked or empty —
-        this is common on server/cloud IPs without YouTube cookies set."""
+        """Return a new autoplay song, never a previously played song.
+
+        Search is intentionally attempted before YouTube's RD mix because RD
+        frequently returns another upload of the exact same song on cloud IPs.
+        The mix remains a fallback, with the same duplicate filtering.
+        """
         if not current or not current.id:
             return None
+
+        played = {str(x) for x in (played or [])}
+        played.add(str(current.id))
+        played_titles = set(played_titles or set())
+        if current.title:
+            played_titles.add(current.title)
+
+        related = await self._related_from_search(current, played, played_titles)
+        if related:
+            return related
+
+        logger.info(
+            f"[Autoplay] Search returned no unique track for {current.id}, trying RD mix."
+        )
+        related = await self._related_from_mix(
+            current.id,
+            played,
+            {self._norm_title(x) for x in played_titles if x},
+        )
+        if related and not self._same_song(related.title, current.title):
+            return related
+
+        logger.warning(f"[Autoplay] No unique related track found for {current.id}.")
+        return None
 
         played = {str(x) for x in (played or [])}
         played.add(str(current.id))
