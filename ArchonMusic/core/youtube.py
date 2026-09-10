@@ -143,6 +143,7 @@ class YouTube:
                     url=data.get("link"),
                     view_count=data.get("viewCount", {}).get("short"),
                     video=video,
+                    search_query=query,
                 )
         except Exception as e:
             logger.error(f"Search error: {e}")
@@ -246,6 +247,7 @@ class YouTube:
         exclude_titles=None,
         title: str | None = None,
         channel_name: str | None = None,
+        search_query: str | None = None,
     ) -> Track | None:
         """Return a related track for autoplay.
 
@@ -260,6 +262,7 @@ class YouTube:
             video=video,
             title=title or "",
             channel_name=channel_name or "",
+            search_query=search_query or "",
         )
         return await self.get_related(
             current,
@@ -337,8 +340,64 @@ class YouTube:
         with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(url, download=False)
 
+    @staticmethod
+    def _detect_language_hint(context: str = "", title: str = "", channel: str = "") -> str | None:
+        """Detect the language/scene of the current song for autoplay.
+
+        This is intentionally lightweight: it uses the user's original search
+        text plus the current title/channel.  The important part is that the
+        autoplay search is never hard-coded to Hindi, so a Bhojpuri session
+        stays Bhojpuri, Punjabi stays Punjabi, etc.
+        """
+        text = f"{context} {title} {channel}".lower()
+        patterns = [
+            ("bhojpuri", r"bhojpuri|भोजपुरी|pawan|khesari|khesari lal|neelkamal|shilpi raj|ritesh pandey|pramod premi|ankush raja|arvind akela|samar singh|golu gold|kallu"),
+            ("punjabi", r"punjabi|ਪੰਜਾਬੀ|sidhu|karan aujla|diljit|ap dhillon|shubh|amrit maan|gurnam bhullar"),
+            ("haryanvi", r"haryanvi|हरियाणवी|sapna choudhary|masoom sharma|gulzaar chhaniwala|raj mawarr|renuka panwar"),
+            ("marathi", r"marathi|मराठी|ajay atul|swapnil bandodkar"),
+            ("tamil", r"tamil|தமிழ்|anirudh|yuvan shankar|vijay antony"),
+            ("telugu", r"telugu|తెలుగు|thaman|devi sri prasad"),
+            ("bengali", r"bengali|বাংলা|bangla"),
+            ("malayalam", r"malayalam|മലയാളം"),
+            ("kannada", r"kannada|ಕನ್ನಡ"),
+            ("odia", r"odia|oriya|ଓଡ଼ିଆ"),
+            ("assamese", r"assamese|অসমীয়া"),
+            ("gujarati", r"gujarati|ગુજરાતી"),
+            ("nepali", r"nepali|नेपाली"),
+            ("rajasthani", r"rajasthani|राजस्थानी"),
+            ("english", r"english song|english music|pop song|rock song|edm"),
+            ("hindi", r"hindi|हिंदी|bollywood|hindi song"),
+        ]
+        for name, pattern in patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                return name
+
+        # Script-based fallback for Indian languages when the user did not
+        # mention the language by name.  Devanagari is treated as Hindi by
+        # default; explicit Bhojpuri artist/title markers above take priority.
+        if re.search(r"[਀-੿]", text):
+            return "punjabi"
+        if re.search(r"[অ-৿]", text):
+            return "bengali"
+        if re.search(r"[઀-૿]", text):
+            return "gujarati"
+        if re.search(r"[஀-௿]", text):
+            return "tamil"
+        if re.search(r"[ఀ-౿]", text):
+            return "telugu"
+        if re.search(r"[ಕ-ೞ]", text):
+            return "kannada"
+        if re.search(r"[അ-ൿ]", text):
+            return "malayalam"
+        if re.search(r"[଀-୿]", text):
+            return "odia"
+        if re.search(r"[ऀ-ॿ]", text):
+            return "hindi"
+        return None
+
     async def _related_from_mix(
-        self, video_id: str, played: set[str], played_titles: set[str]
+        self, video_id: str, played: set[str], played_titles: set[str],
+        language_hint: str | None = None,
     ) -> Track | None:
         loop = asyncio.get_event_loop()
         try:
@@ -369,6 +428,16 @@ class YouTube:
             normalized_title = re.sub(r"\W+", " ", title.lower()).strip()
             if normalized_title in played_titles:
                 continue
+
+            # When we know the session language, prefer matching entries.
+            # Do not hard-reject entries here because YouTube mix metadata
+            # often omits language labels; the search path above is the
+            # primary language-aware source.
+            if language_hint:
+                entry_text = f"{title} {entry.get('channel') or entry.get('uploader') or ''}".lower()
+                entry_language = self._detect_language_hint(title=title, channel=entry.get('channel') or entry.get('uploader') or '')
+                if entry_language and entry_language != language_hint:
+                    continue
 
             duration = int(entry.get("duration") or 0)
             if duration <= 0 or duration > config.DURATION_LIMIT:
@@ -435,16 +504,29 @@ class YouTube:
         title = (current.title or "").strip()
         channel = (current.channel_name or "").strip()
 
-        # Current-title search is useful, but it tends to return the same song
-        # in multiple uploads. Channel/general searches are also used so that
-        # autoplay can move to a genuinely different track.
+        # Preserve the language/scene of the user's original request.
+        # Never fall back to a hard-coded Hindi query.
+        context = (getattr(current, "search_query", None) or "").strip()
+        language_hint = self._detect_language_hint(context, title, channel)
+
         queries = []
-        if channel:
-            queries.append(f"{channel} songs")
-            queries.append(f"{channel} best songs")
-        if title:
-            queries.append(f"{title} similar songs")
-        queries.append("90s hindi songs")
+        if language_hint:
+            if context:
+                queries.append(f"{context} {language_hint} songs")
+            if title:
+                queries.append(f"{title} {language_hint} song")
+            if channel:
+                queries.append(f"{channel} {language_hint} songs")
+            queries.append(f"best {language_hint} songs")
+        else:
+            if context:
+                queries.append(f"{context} songs")
+            if channel:
+                queries.append(f"{channel} songs")
+                queries.append(f"{channel} best songs")
+            if title:
+                queries.append(f"{title} similar songs")
+
         queries = list(dict.fromkeys(q.strip() for q in queries if q.strip()))
 
         current_id = str(current.id)
@@ -502,6 +584,7 @@ class YouTube:
                         url=data.get("link"),
                         view_count=data.get("viewCount", {}).get("short"),
                         video=False,
+                        search_query=context,
                     )
                 )
 
@@ -541,12 +624,18 @@ class YouTube:
         logger.info(
             f"[Autoplay] Search returned no unique track for {current.id}, trying RD mix."
         )
+        context = (getattr(current, "search_query", None) or "").strip()
+        language_hint = self._detect_language_hint(
+            context, current.title or "", current.channel_name or ""
+        )
         related = await self._related_from_mix(
             current.id,
             played,
             {self._norm_title(x) for x in played_titles if x},
+            language_hint=language_hint,
         )
         if related and not self._same_song(related.title, current.title):
+            related.search_query = context
             return related
 
         logger.warning(f"[Autoplay] No unique related track found for {current.id}.")
