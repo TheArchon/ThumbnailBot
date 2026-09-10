@@ -389,9 +389,10 @@ class TgCall(PyTgCalls):
 
 
     async def play_next(self, chat_id: int) -> None:
+        # Always wait for an in-progress transition instead of silently
+        # dropping /skip. This matters when autoplay is preparing the next
+        # track at the same moment a user presses Skip.
         lock = self._next_locks.setdefault(chat_id, asyncio.Lock())
-        if lock.locked():
-            return
         async with lock:
             await self._play_next(chat_id)
 
