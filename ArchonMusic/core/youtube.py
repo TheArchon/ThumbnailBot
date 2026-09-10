@@ -242,6 +242,7 @@ class YouTube:
         video_id: str,
         video: bool = False,
         exclude=None,
+        exclude_titles=None,
         title: str | None = None,
         channel_name: str | None = None,
     ) -> Track | None:
@@ -259,7 +260,11 @@ class YouTube:
             title=title or "",
             channel_name=channel_name or "",
         )
-        return await self.get_related(current, played=list(exclude or []))
+        return await self.get_related(
+            current,
+            played=list(exclude or []),
+            played_titles=set(exclude_titles or []),
+        )
 
     async def playlist(self, limit: int, user: str, url: str, video: bool) -> list[Track]:
         tracks = []
@@ -332,7 +337,7 @@ class YouTube:
             return ydl.extract_info(url, download=False)
 
     async def _related_from_mix(
-        self, video_id: str, played: set[str]
+        self, video_id: str, played: set[str], played_titles: set[str]
     ) -> Track | None:
         loop = asyncio.get_event_loop()
         try:
@@ -360,6 +365,10 @@ class YouTube:
             if title.lower() in ("[deleted video]", "[private video]"):
                 continue
 
+            normalized_title = re.sub(r"\W+", " ", title.lower()).strip()
+            if normalized_title in played_titles:
+                continue
+
             duration = int(entry.get("duration") or 0)
             if duration <= 0 or duration > config.DURATION_LIMIT:
                 continue
@@ -382,7 +391,7 @@ class YouTube:
         return None
 
     async def _related_from_search(
-        self, current: Track, played: set[str]
+        self, current: Track, played: set[str], played_titles: set[str]
     ) -> Track | None:
         """Find a genuinely different autoplay track.
 
@@ -406,6 +415,9 @@ class YouTube:
         played_ids = {str(x) for x in played}
         played_ids.add(current_id)
         current_title = re.sub(r"\W+", " ", title.lower()).strip()
+        played_titles = {re.sub(r"\W+", " ", str(x).lower()).strip() for x in played_titles if x}
+        if current_title:
+            played_titles.add(current_title)
         candidates = []
         seen = set(played_ids)
 
@@ -428,7 +440,7 @@ class YouTube:
 
                 result_title = (data.get("title") or "Unknown").strip()
                 normalized_title = re.sub(r"\W+", " ", result_title.lower()).strip()
-                if normalized_title == current_title:
+                if normalized_title in played_titles or normalized_title == current_title:
                     continue
 
                 seen.add(eid)
@@ -452,7 +464,10 @@ class YouTube:
         return random.choice(candidates[:15])
 
     async def get_related(
-        self, current: Track, played: list[str] | None = None
+        self,
+        current: Track,
+        played: list[str] | None = None,
+        played_titles: set[str] | None = None,
     ) -> Track | None:
         """Fetch the next autoplay track, skipping anything already played in
         this session. Tries YouTube's related mix first, falling back to a
@@ -461,17 +476,27 @@ class YouTube:
         if not current or not current.id:
             return None
 
-        played = set(played or [])
-        played.add(current.id)
+        played = {str(x) for x in (played or [])}
+        played.add(str(current.id))
+        played_titles = {
+            re.sub(r"\W+", " ", str(x).lower()).strip()
+            for x in (played_titles or set())
+            if x
+        }
+        current_title = re.sub(
+            r"\W+", " ", str(current.title or "").lower()
+        ).strip()
+        if current_title:
+            played_titles.add(current_title)
 
-        related = await self._related_from_mix(current.id, played)
+        related = await self._related_from_mix(current.id, played, played_titles)
         if related:
             return related
 
         logger.info(
             f"[Autoplay] Mix returned nothing for {current.id}, trying search fallback."
         )
-        related = await self._related_from_search(current, played)
+        related = await self._related_from_search(current, played, played_titles)
         if related:
             return related
 

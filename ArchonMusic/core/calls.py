@@ -22,6 +22,7 @@ class TgCall(PyTgCalls):
     def __init__(self):
         self.clients = []
         self.autoplay_history: dict[int, set] = {}
+        self.autoplay_title_history: dict[int, set] = {}
         self._autoplay_locks: dict[int, asyncio.Lock] = {}
         self._next_locks: dict[int, asyncio.Lock] = {}
         self._bot_avatar_path: str | None = None
@@ -48,6 +49,7 @@ class TgCall(PyTgCalls):
         await db.remove_call(chat_id)
         await db.set_loop(chat_id, 0)
         self.autoplay_history.pop(chat_id, None)
+        self.autoplay_title_history.pop(chat_id, None)
         self._autoplay_locks.pop(chat_id, None)
         self._next_locks.pop(chat_id, None)
 
@@ -332,29 +334,45 @@ class TgCall(PyTgCalls):
                 return existing
 
             history = self.autoplay_history.setdefault(chat_id, set())
+            title_history = self.autoplay_title_history.setdefault(chat_id, set())
             history.add(str(video_id))
 
-            # Exclude every track already present in the queue as well.
-            # This prevents /skip from selecting the same autoplay track again
-            # when the provider returns a duplicate result.
-            queued_ids = {str(item.id) for item in queue.get_queue(chat_id) if getattr(item, "id", None)}
+            # Exclude both video IDs AND normalized song titles. YouTube often
+            # returns another upload/remix of the exact same song with a new ID.
+            queued = queue.get_queue(chat_id)
+            queued_ids = {str(item.id) for item in queued if getattr(item, "id", None)}
+            queued_titles = {
+                re.sub(r"\W+", " ", str(getattr(item, "title", "") or "").lower()).strip()
+                for item in queued
+                if getattr(item, "title", None)
+            }
             exclude = history | queued_ids
+            exclude_titles = title_history | queued_titles
 
             track = await yt.autoplay_track(
                 video_id,
                 video=getattr(finished, "video", False),
                 exclude=exclude,
+                exclude_titles=exclude_titles,
                 title=getattr(finished, "title", None),
                 channel_name=getattr(finished, "channel_name", None),
             )
             if not track:
                 return None
 
-            # Never insert the currently playing/queued track again.
-            if str(track.id) in exclude:
+            # Never insert the currently playing/queued track again, even if
+            # YouTube returns a different video ID for the same song title.
+            normalized_track_title = re.sub(
+                r"\W+", " ", str(getattr(track, "title", "") or "").lower()
+            ).strip()
+            if str(track.id) in exclude or (
+                normalized_track_title and normalized_track_title in exclude_titles
+            ):
                 return None
 
             history.add(str(track.id))
+            if normalized_track_title:
+                title_history.add(normalized_track_title)
             track.user = "Autoplay"
             queue.add(chat_id, track)
             return track
