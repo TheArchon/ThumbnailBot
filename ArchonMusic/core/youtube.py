@@ -268,12 +268,14 @@ class YouTube:
             title=title or "",
             channel_name=channel_name or "",
         )
-        context_query = self.track_context.get(str(video_id), "")
+        # The original /play query is stored outside Track, keyed by video ID.
+        # This keeps the Track dataclass backward-compatible.
+        context_query = (search_query or self.track_context.get(str(video_id), "") or "").strip()
         return await self.get_related(
             current,
             played=list(exclude or []),
             played_titles=set(exclude_titles or []),
-            context_query=context_query,
+            context_query=context_query or None,
         )
 
     async def playlist(self, limit: int, user: str, url: str, video: bool) -> list[Track]:
@@ -589,10 +591,16 @@ class YouTube:
         logger.info(
             f"[Autoplay] Search returned no unique track for {current.id}, trying RD mix."
         )
+        language_hint = self._detect_language_hint(
+            context_query or self.track_context.get(str(current.id), ""),
+            current.title or "",
+            current.channel_name or "",
+        )
         related = await self._related_from_mix(
             current.id,
             played,
             {self._norm_title(x) for x in played_titles if x},
+            language_hint=language_hint,
         )
         if related and not self._same_song(related.title, current.title):
             if related.id and context_query:
