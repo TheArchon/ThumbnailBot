@@ -270,7 +270,7 @@ class YouTube:
         )
         # The original /play query is stored outside Track, keyed by video ID.
         # This keeps the Track dataclass backward-compatible.
-        context_query = (search_query or self.track_context.get(str(video_id), "") or "").strip()
+        context_query = self.track_context.get(str(video_id), "").strip()
         return await self.get_related(
             current,
             played=list(exclude or []),
@@ -349,7 +349,8 @@ class YouTube:
             return ydl.extract_info(url, download=False)
 
     async def _related_from_mix(
-        self, video_id: str, played: set[str], played_titles: set[str]
+        self, video_id: str, played: set[str], played_titles: set[str],
+        language_hint: str | None = None,
     ) -> Track | None:
         loop = asyncio.get_event_loop()
         try:
@@ -380,6 +381,15 @@ class YouTube:
             normalized_title = re.sub(r"\W+", " ", title.lower()).strip()
             if normalized_title in played_titles:
                 continue
+
+            # Keep the RD mix in the same regional language when possible.
+            if language_hint:
+                detected = self._detect_language_hint(
+                    title=title,
+                    channel=entry.get("channel") or entry.get("uploader") or "",
+                )
+                if detected and detected.lower() != language_hint.lower():
+                    continue
 
             duration = int(entry.get("duration") or 0)
             if duration <= 0 or duration > config.DURATION_LIMIT:
@@ -433,6 +443,60 @@ class YouTube:
             if overlap >= 0.80:
                 return True
         return SequenceMatcher(None, a, b).ratio() >= 0.84
+
+    @staticmethod
+    def _detect_language_hint(context: str = "", title: str = "", channel: str = "") -> str | None:
+        """Detect the music language/scene used for autoplay searches.
+
+        Explicit language words in the original search have highest priority.
+        Bhojpuri gets a strong dedicated hint so a Bhojpuri session keeps
+        returning Bhojpuri songs instead of drifting into generic Hindi.
+        """
+        text = f"{context} {title} {channel}".lower()
+
+        language_keywords = {
+            "bhojpuri": [
+                "bhojpuri", "भोजपुरी", "bhojpuriya", "bhojpuri song",
+                "bhojpuri songs", "bhojpuri gana", "bhojpuri gaana",
+                "pawan singh", "khesari lal", "khesari lal yadav",
+                "ritesh pandey", "shilpi raj", "pramod premi",
+                "neelkamal singh", "arvind akela kallu", "ankush raja",
+                "gunjan singh", "rajesh raja", "rakesh mishra",
+            ],
+            "punjabi": ["punjabi", "ਪੰਜਾਬੀ", "sidhu moose wala", "karan aujla", "diljit dosanjh", "amrit maan"],
+            "haryanvi": ["haryanvi", "हरियाणवी", "haryanavi", "sapna choudhary", "gulzaar chhaniwala", "masoom sharma"],
+            "rajasthani": ["rajasthani", "राजस्थानी", "marwadi", "मारवाड़ी"],
+            "marathi": ["marathi", "मराठी", "marathi song", "marathi songs"],
+            "bengali": ["bengali", "বাংলা", "bangla song", "bengali song", "bengali songs"],
+            "tamil": ["tamil", "தமிழ்", "tamil song", "tamil songs"],
+            "telugu": ["telugu", "తెలుగు", "telugu song", "telugu songs"],
+            "kannada": ["kannada", "ಕನ್ನಡ", "kannada song", "kannada songs"],
+            "malayalam": ["malayalam", "മലയാളം", "malayalam song", "malayalam songs"],
+            "odia": ["odia", "oriya", "ଓଡ଼ିଆ", "odia song", "odia songs"],
+            "assamese": ["assamese", "অসমীয়া", "assamese song", "assamese songs"],
+            "gujarati": ["gujarati", "ગુજરાતી", "gujarati song", "gujarati songs"],
+            "hindi": ["hindi", "हिंदी", "hindi song", "hindi songs"],
+        }
+
+        # Explicit Bhojpuri markers first.
+        for word in language_keywords["bhojpuri"]:
+            if word in text:
+                return "Bhojpuri"
+
+        # Other regional-language markers.
+        for lang, words in language_keywords.items():
+            if lang == "bhojpuri":
+                continue
+            for word in words:
+                if word in text:
+                    return lang.title()
+
+        # Devanagari is useful as a Hindi/Bhojpuri fallback, but don't call it
+        # Bhojpuri without a Bhojpuri-specific marker.
+        if re.search(r"[\u0900-\u097F]", text):
+            return "Hindi"
+
+        return None
 
     async def _related_from_search(
         self, current: Track, played: set[str], played_titles: set[str],
