@@ -41,10 +41,10 @@ class Config:
             if url and "batbin.me" in url
         ]
         self.DEFAULT_THUMB = getenv("DEFAULT_THUMB", "https://graph.org/file/a0c719a648b318df230ab-b7a25ab69ad6cec4fc.jpg")
-        self.PING_IMG = getenv("PING_IMG", "https://graph.org/file/a0c719a648b318df230ab-b7a25ab69ad6cec4fc.jpg")
+        self.PING_IMG = getenv("PING_IMG", "https://files.catbox.moe/7hr8ah.jpg")
         self.START_VIDEO = getenv("START_VIDEO", "https://d.uguu.se/RHlOgTuP.mp4")
         self.BOT_NAME = "QUEEN MUSIC"
-        self.BOT_PHOTO_URL = "https://graph.org/file/9462106718f8c0bd05ea5-278adabcf2ca58d409.jpg"
+        self.BOT_PHOTO_URL = "https://files.catbox.moe/wta4lx.jpg"
 
     def check(self):
         missing = [
