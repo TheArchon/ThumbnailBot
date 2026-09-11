@@ -81,7 +81,27 @@ async def play_hndlr(
         )
 
     if await db.is_logger():
-        await utils.play_log(m, sent.link, file.title, file.duration)
+        if media:
+            log_query = "Telegram media"
+            log_stream_type = "telegram"
+        elif m3u8:
+            log_query = url or "M3U8"
+            log_stream_type = "m3u8"
+        elif url:
+            log_query = url
+            log_stream_type = "youtube"
+        else:
+            log_query = " ".join(m.command[1:]).strip() if len(m.command) > 1 else file.title
+            log_stream_type = "youtube"
+
+        await utils.play_log(
+            m,
+            sent.link,
+            file.title,
+            file.duration,
+            query=log_query,
+            stream_type=log_stream_type,
+        )
 
     file.user = mention
     if force:
