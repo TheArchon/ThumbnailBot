@@ -445,9 +445,16 @@ class TgCall(PyTgCalls):
         _lang = await lang.get_lang(chat_id)
 
         # The next track is prepared in the background while the current
-        # track is playing. NEVER wait for that background task here: if it
-        # is still running, resolve the stream URL directly below. This keeps
-        # the transition fast and prevents a real HOLD delay.
+        # track is playing. Reuse that same preparation instead of showing
+        # the old "HOLD / DOWNLOADING NEXT MEDIA" message at every transition.
+        prefetch_task = self._prefetch_tasks.get(chat_id)
+        if prefetch_task and not prefetch_task.done():
+            try:
+                await prefetch_task
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"[play_next] prefetch failed for chat {chat_id}: {e!r}")
 
         if not media.file_path:
             media.file_path = await yt.stream_url(media.id, video=media.video)
@@ -461,23 +468,13 @@ class TgCall(PyTgCalls):
                 media.message_id = sent.id
                 return await self.stop(chat_id)
 
-        # Do not edit the player to the old "Downloading next media" text.
-        # Keep one player message and replace its media/caption for the next
-        # track once its stream is ready.
-        player_message = None
-        if finished and finished.message_id:
-            try:
-                player_message = await app.get_messages(
-                    chat_id, finished.message_id
-                )
-            except Exception:
-                player_message = None
-
-        if player_message is None:
-            player_message = await app.send_message(
-                chat_id=chat_id,
-                text="Loading...",
-            )
+        # Each track gets its OWN player message.
+        # Never reuse/edit the previous song's player message; this keeps
+        # every played track visible as a separate message in the chat.
+        player_message = await app.send_message(
+            chat_id=chat_id,
+            text="Loading...",
+        )
 
         media.message_id = player_message.id
         await self.play_media(chat_id, player_message, media)
@@ -502,17 +499,9 @@ class TgCall(PyTgCalls):
             if not upcoming or upcoming.file_path:
                 return
 
-            # Fully download the upcoming track in the background. This is
-            # intentionally done while the current track is playing so the
-            # next transition can start from a local file immediately.
-            upcoming.file_path = await yt.download(
+            upcoming.file_path = await yt.stream_url(
                 upcoming.id, video=upcoming.video
             )
-            if not upcoming.file_path:
-                # Fast URL fallback if the downloader/API is temporarily unavailable.
-                upcoming.file_path = await yt.stream_url(
-                    upcoming.id, video=upcoming.video
-                )
         except asyncio.CancelledError:
             raise
         except Exception as e:
