@@ -502,9 +502,17 @@ class TgCall(PyTgCalls):
             if not upcoming or upcoming.file_path:
                 return
 
-            upcoming.file_path = await yt.stream_url(
+            # Fully download the upcoming track in the background. This is
+            # intentionally done while the current track is playing so the
+            # next transition can start from a local file immediately.
+            upcoming.file_path = await yt.download(
                 upcoming.id, video=upcoming.video
             )
+            if not upcoming.file_path:
+                # Fast URL fallback if the downloader/API is temporarily unavailable.
+                upcoming.file_path = await yt.stream_url(
+                    upcoming.id, video=upcoming.video
+                )
         except asyncio.CancelledError:
             raise
         except Exception as e:
