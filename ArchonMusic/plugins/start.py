@@ -43,15 +43,15 @@ async def start(_, message: types.Message):
     )
 
     if private:
-        if await db.is_user(message.from_user.id):
-            return
+        # Log EVERY /start, but add the user to the database only once.
         await utils.send_log(message)
-        await db.add_user(message.from_user.id)
+        if not await db.is_user(message.from_user.id):
+            await db.add_user(message.from_user.id)
     else:
-        if await db.is_chat(message.chat.id):
-            return
+        # Log EVERY group /start, but add the chat to the database only once.
         await utils.send_log(message, True)
-        await db.add_chat(message.chat.id)
+        if not await db.is_chat(message.chat.id):
+            await db.add_chat(message.chat.id)
 
 
 @app.on_message(filters.command(["settings", "playmode"]) & filters.group & ~app.bl_users)
