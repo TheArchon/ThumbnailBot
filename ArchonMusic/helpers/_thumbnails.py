@@ -173,9 +173,30 @@ class Thumbnail:
             return None
 
     def fit_image(self, image, size):
-        return ImageOps.fit(
-            image, size, method=Image.Resampling.LANCZOS, centering=(0.5, 0.5)
+        """Resize without cropping so the complete cover/avatar remains visible.
+
+        A blurred version fills the unused area while the original artwork is
+        contained inside the target box at its full aspect ratio.
+        """
+        source = image.convert("RGB")
+        target_w, target_h = size
+
+        background = ImageOps.fit(
+            source,
+            size,
+            method=Image.Resampling.LANCZOS,
+            centering=(0.5, 0.5),
+        ).filter(ImageFilter.GaussianBlur(radius=max(4, int(min(size) * 0.025))))
+        background = ImageEnhance.Brightness(background).enhance(0.55)
+
+        # Contain the original image: no cropping.
+        foreground = ImageOps.contain(
+            source, size, method=Image.Resampling.LANCZOS
         )
+        x = (target_w - foreground.width) // 2
+        y = (target_h - foreground.height) // 2
+        background.paste(foreground, (x, y))
+        return background
 
     def add_round_corners(self, image, radius):
         rounded = image.convert("RGBA")
