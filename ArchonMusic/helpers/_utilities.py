@@ -137,7 +137,7 @@ class Utilities:
         )
 
         _text = (
-            f"❖ {user_mention} ᴘʟᴀʏ ʟᴏɢ\n\n"
+            f"❖ {app.mention} ᴘʟᴀʏ ʟᴏɢ\n\n"
             f"● ᴄʜᴀᴛ ɪᴅ ➠ {chat.id}\n"
             f"● ᴄʜᴀᴛ ɴᴀᴍᴇ ➠ {chat.title or 'N/A'}\n"
             f"● ᴄʜᴀᴛ ᴜsᴇʀɴᴀᴍᴇ ➠ {chat_username}\n\n"
