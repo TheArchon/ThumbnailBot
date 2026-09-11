@@ -91,21 +91,31 @@ class Utilities:
     async def play_log(
         self,
         m: types.Message,
-        link: str,
-        title: str,
-        duration: str,
+        link: str = None,
+        title: str = None,
+        duration: str = None,
+        query: str = None,
+        stream_type: str = "youtube",
     ) -> None:
         if m.chat.id == app.logger:
             return
-        _text = m.lang["play_log"].format(
-            app.name,
-            m.chat.id,
-            m.chat.title,
-            m.from_user.id,
-            m.from_user.mention,
-            link,
-            title,
-            duration,
+
+        chat = m.chat
+        user = m.from_user
+        chat_username = f"@{chat.username}" if chat.username else "N/A"
+        username = f"@{user.username}" if user and user.username else "N/A"
+        user_name = user.first_name if user and user.first_name else "N/A"
+
+        _text = (
+            "❖ 𝙌𝙪𝙚𝙚𝙣 𝙭 𝙢𝙪𝙨𝙞𝙘 ᴘʟᴀʏ ʟᴏɢ\n\n"
+            f"● ᴄʜᴀᴛ ɪᴅ ➠ {chat.id}\n"
+            f"● ᴄʜᴀᴛ ɴᴀᴍᴇ ➠ {chat.title or 'N/A'}\n"
+            f"● ᴄʜᴀᴛ ᴜsᴇʀɴᴀᴍᴇ ➠ {chat_username}\n\n"
+            f"● ᴜsᴇʀ ɪᴅ ➠ {user.id if user else 0}\n"
+            f"● ɴᴀᴍᴇ ➠ {user_name}\n"
+            f"● ᴜsᴇʀɴᴀᴍᴇ ➠ {username}\n\n"
+            f"● ǫᴜᴇʀʏ ➠ {query or 'N/A'}\n"
+            f"● sᴛʀᴇᴀᴍᴛʏᴘᴇ ➠ {stream_type or 'youtube'}"
         )
         await app.send_message(chat_id=app.logger, text=_text)
 
