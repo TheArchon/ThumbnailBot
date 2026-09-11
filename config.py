@@ -42,7 +42,7 @@ class Config:
         ]
         self.DEFAULT_THUMB = getenv("DEFAULT_THUMB", "https://graph.org/file/a0c719a648b318df230ab-b7a25ab69ad6cec4fc.jpg")
         self.PING_IMG = getenv("PING_IMG", "https://graph.org/file/a0c719a648b318df230ab-b7a25ab69ad6cec4fc.jpg")
-        self.START_VIDEO = getenv("START_VIDEO", "https://graph.org/file/2252e56532a9afedf82b0-65f2d893b4c60fe0e1.mp4")
+        self.START_VIDEO = getenv("START_VIDEO", "https://d.uguu.se/RHlOgTuP.mp4")
         self.BOT_NAME = "QUEEN MUSIC"
         self.BOT_PHOTO_URL = "https://graph.org/file/9462106718f8c0bd05ea5-278adabcf2ca58d409.jpg"
 
