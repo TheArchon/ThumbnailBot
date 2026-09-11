@@ -212,9 +212,11 @@ class TgCall(PyTgCalls):
                 asyncio.create_task(
                     self._send_now_playing(chat_id, message, media, _lang)
                 )
-                # Prepare the next queued/autoplay track while this one is
-                # playing, so /skip and automatic transition are immediate.
-                asyncio.create_task(self._prefetch_next(chat_id))
+                # Prepare the next queued/autoplay track immediately while
+                # this one is playing. Keep the task reference so transition
+                # code can reuse a ready URL without ever waiting on it.
+                prefetch = asyncio.create_task(self._prefetch_next(chat_id))
+                self._prefetch_tasks[chat_id] = prefetch
         except FileNotFoundError:
             await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
             await self.stop(chat_id)
@@ -444,15 +446,16 @@ class TgCall(PyTgCalls):
 
         _lang = await lang.get_lang(chat_id)
 
-        # The next track is prepared in the background while the current
-        # track is playing. Reuse that same preparation instead of showing
-        # the old "HOLD / DOWNLOADING NEXT MEDIA" message at every transition.
+        # Prefetch runs in the background. NEVER wait for it here: if the
+        # prefetched URL is already ready, use it; otherwise resolve the
+        # stream immediately. Waiting for the background task was the main
+        # reason the next song could sit on HOLD at the transition.
         prefetch_task = self._prefetch_tasks.get(chat_id)
-        if prefetch_task and not prefetch_task.done():
+        if prefetch_task and prefetch_task.done():
             try:
-                await prefetch_task
+                prefetch_task.result()
             except asyncio.CancelledError:
-                raise
+                pass
             except Exception as e:
                 logger.warning(f"[play_next] prefetch failed for chat {chat_id}: {e!r}")
 
