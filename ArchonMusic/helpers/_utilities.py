@@ -107,7 +107,6 @@ class Utilities:
         user_name = user.first_name if user and user.first_name else "N/A"
 
         _text = (
-            "❖ 𝙌𝙪𝙚𝙚𝙣 𝙭 𝙢𝙪𝙨𝙞𝙘 ᴘʟᴀʏ ʟᴏɢ\n\n"
             f"● ᴄʜᴀᴛ ɪᴅ ➠ {chat.id}\n"
             f"● ᴄʜᴀᴛ ɴᴀᴍᴇ ➠ {chat.title or 'N/A'}\n"
             f"● ᴄʜᴀᴛ ᴜsᴇʀɴᴀᴍᴇ ➠ {chat_username}\n\n"
