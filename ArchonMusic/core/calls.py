@@ -25,6 +25,7 @@ class TgCall(PyTgCalls):
         self.autoplay_title_history: dict[int, set] = {}
         self._autoplay_locks: dict[int, asyncio.Lock] = {}
         self._next_locks: dict[int, asyncio.Lock] = {}
+        self._prefetch_tasks: dict[int, asyncio.Task] = {}
         self._bot_avatar_path: str | None = None
         # Caches each user's downloaded profile-photo file path after the
         # first lookup. Without this, the SAME user replaying/queuing
@@ -52,6 +53,9 @@ class TgCall(PyTgCalls):
         self.autoplay_title_history.pop(chat_id, None)
         self._autoplay_locks.pop(chat_id, None)
         self._next_locks.pop(chat_id, None)
+        task = self._prefetch_tasks.pop(chat_id, None)
+        if task and not task.done():
+            task.cancel()
 
         try:
             await client.leave_call(chat_id, close=False)
@@ -281,7 +285,22 @@ class TgCall(PyTgCalls):
                         reply_markup=keyboard,
                     )
                 else:
-                    await message.edit_text(text, reply_markup=keyboard)
+                    # Never convert an existing photo message into a text
+                    # message just because thumbnail generation failed.
+                    # That would make the album/player picture disappear.
+                    # Keep the current photo and only update its caption.
+                    if message.photo:
+                        try:
+                            await message.edit_caption(
+                                caption=text,
+                                reply_markup=keyboard,
+                            )
+                        except Exception:
+                            # If caption editing is unavailable, leave the
+                            # existing photo message untouched.
+                            pass
+                    else:
+                        await message.edit_text(text, reply_markup=keyboard)
             except (ChatSendMediaForbidden, ChatSendPhotosForbidden, MessageIdInvalid):
                 if _thumb:
                     sent = await app.send_photo(
@@ -423,42 +442,65 @@ class TgCall(PyTgCalls):
         if not media:
             return await self.stop(chat_id)
 
-        _lang, msg = await asyncio.gather(
-            lang.get_lang(chat_id),
-            app.send_message(chat_id=chat_id, text="Loading..."),
-        )
+        _lang = await lang.get_lang(chat_id)
+
+        # The next track is prepared in the background while the current
+        # track is playing. Reuse that same preparation instead of showing
+        # the old "HOLD / DOWNLOADING NEXT MEDIA" message at every transition.
+        prefetch_task = self._prefetch_tasks.get(chat_id)
+        if prefetch_task and not prefetch_task.done():
+            try:
+                await prefetch_task
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"[play_next] prefetch failed for chat {chat_id}: {e!r}")
 
         if not media.file_path:
-            # Stream directly from the download API's URL — ffmpeg plays
-            # off it directly, so this is near-instant vs. waiting for a
-            # full download to disk. Falls back to a full download() only
-            # if the API didn't return valid media for this video (rare).
             media.file_path = await yt.stream_url(media.id, video=media.video)
             if not media.file_path:
                 media.file_path = await yt.download(media.id, video=media.video)
             if not media.file_path:
-                # No retry, no next-track chain — just report the
-                # failure once and stop, exactly one message.
-                await msg.edit_text(
-                    _lang["error_no_file"].format(config.SUPPORT_CHAT)
+                sent = await app.send_message(
+                    chat_id=chat_id,
+                    text=_lang["error_no_file"].format(config.SUPPORT_CHAT),
                 )
+                media.message_id = sent.id
                 return await self.stop(chat_id)
 
-        await msg.edit_text(_lang["play_next"])
+        # Do not edit the player to the old "Downloading next media" text.
+        # Keep one player message and replace its media/caption for the next
+        # track once its stream is ready.
+        player_message = None
+        if finished and finished.message_id:
+            try:
+                player_message = await app.get_messages(
+                    chat_id, finished.message_id
+                )
+            except Exception:
+                player_message = None
 
-        media.message_id = msg.id
-        await self.play_media(chat_id, msg, media)
-        asyncio.create_task(self._prefetch_next(chat_id))
+        if player_message is None:
+            player_message = await app.send_message(
+                chat_id=chat_id,
+                text="Loading...",
+            )
+
+        media.message_id = player_message.id
+        await self.play_media(chat_id, player_message, media)
 
     async def _prefetch_next(self, chat_id: int) -> None:
         """Prepare the next manual/autoplay track while current audio plays."""
+        current_task = asyncio.current_task()
+        existing = self._prefetch_tasks.get(chat_id)
+        if existing and existing is not current_task and not existing.done():
+            return
+
+        self._prefetch_tasks[chat_id] = current_task
         try:
             upcoming = queue.get_next(chat_id, check=True)
 
-            # IMPORTANT: autoplay must be queued BEFORE StreamEnded fires.
-            # The old prefetch only looked at the manual queue, so when the
-            # queue was empty there was nothing to prepare and autoplay could
-            # stop at the end of the current song.
+            # Autoplay is prepared before StreamEnded whenever possible.
             if not upcoming and await db.get_autoplay(chat_id):
                 current = queue.get_current(chat_id)
                 if current:
@@ -470,8 +512,13 @@ class TgCall(PyTgCalls):
             upcoming.file_path = await yt.stream_url(
                 upcoming.id, video=upcoming.video
             )
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.warning(f"[_prefetch_next] failed for chat {chat_id}: {e!r}")
+        finally:
+            if self._prefetch_tasks.get(chat_id) is current_task:
+                self._prefetch_tasks.pop(chat_id, None)
 
 
     async def ping(self) -> float:
