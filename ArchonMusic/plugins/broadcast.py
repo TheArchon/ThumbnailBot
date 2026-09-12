@@ -17,17 +17,24 @@ async def _broadcast(_, message: types.Message):
         return await message.reply_text(message.lang["gcast_active"])
 
     command = message.command or []
-    flags = {str(x).lower() for x in command[1:] if str(x).startswith("-")}
+    args = [str(x) for x in command[1:]]
+    # Only these are real broadcast control flags. Any other argument beginning
+    # with '-' is treated as broadcast text, so `/broadcast -user -hi` works.
+    control_flags = {"-user", "-nochat", "-copy"}
+    flags = {x.lower() for x in args if x.lower() in control_flags}
     msg = message.reply_to_message
 
-    # /broadcast <text> also supports flags before/after the text, e.g.
-    # /broadcast -user hi. Flags are control options and must never be sent
-    # as part of the broadcast content.
     direct_text = None
     if not msg:
-        text_parts = [str(x) for x in command[1:] if not str(x).startswith("-")]
+        text_parts = [x for x in args if x.lower() not in control_flags]
         if text_parts:
-            direct_text = " ".join(text_parts).strip()
+            # Allow `/broadcast -user -hi` to broadcast `hi`, not `-hi`.
+            cleaned = []
+            for part in text_parts:
+                if part.startswith("-") and len(part) > 1:
+                    part = part[1:]
+                cleaned.append(part)
+            direct_text = " ".join(cleaned).strip()
         if not direct_text:
             return await message.reply_text("Usage:\n/broadcast Your message here")
 
