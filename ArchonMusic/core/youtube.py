@@ -348,31 +348,6 @@ class YouTube:
         with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(url, download=False)
 
-    @staticmethod
-    def _is_compilation_or_long_mix(title: str, duration_sec: int) -> bool:
-        """Reject long compilations/mixes from autoplay.
-
-        Autoplay should pick an individual song, not a 20-60 minute
-        compilation, jukebox, nonstop mix, or full album.
-        """
-        title_l = str(title or "").lower()
-        blocked = (
-            "nonstop", "non-stop", "jukebox", "full album", "album",
-            "compilation", "collection", "evergreen songs", "evergreen",
-            "best of", "greatest hits", "hits collection", "playlist",
-            "mix", "mashup", "medley", "dj set", "dj mix", "remix mix",
-            "songs", "song collection", "all songs", "top songs",
-            "30 songs", "50 songs", "100 songs", "1 hour", "2 hour",
-            "1 hr", "2 hr",
-        )
-        if any(word in title_l for word in blocked):
-            return True
-
-        # Individual autoplay songs are normally short. Keep a generous
-        # 10-minute ceiling so long genuine tracks can still play, while
-        # preventing large compilations from entering the autoplay queue.
-        return int(duration_sec or 0) > 10 * 60
-
     async def _related_from_mix(
         self, video_id: str, played: set[str], played_titles: set[str],
         language_hint: str | None = None,
@@ -413,13 +388,11 @@ class YouTube:
                     title=title,
                     channel=entry.get("channel") or entry.get("uploader") or "",
                 )
-                if detected and detected.lower() != language_hint.lower():
+                if not detected or detected.lower() != language_hint.lower():
                     continue
 
             duration = int(entry.get("duration") or 0)
             if duration <= 0 or duration > config.DURATION_LIMIT:
-                continue
-            if self._is_compilation_or_long_mix(title, duration):
                 continue
 
             thumbs = entry.get("thumbnails") or []
@@ -473,57 +446,105 @@ class YouTube:
 
     @staticmethod
     def _detect_language_hint(context: str = "", title: str = "", channel: str = "") -> str | None:
-        """Detect the music language/scene used for autoplay searches.
+        """Detect the requested music language/scene.
 
-        Explicit language words in the original search have highest priority.
-        Bhojpuri gets a strong dedicated hint so a Bhojpuri session keeps
-        returning Bhojpuri songs instead of drifting into generic Hindi.
+        The original query has priority.  Candidate tracks are later checked
+        against this same language so autoplay does not silently switch from
+        Bhojpuri to Hindi, Hindi to Punjabi, etc.
         """
         text = f"{context} {title} {channel}".lower()
 
         language_keywords = {
-            "bhojpuri": [
-                "bhojpuri", "भोजपुरी", "bhojpuriya", "bhojpuri song",
-                "bhojpuri songs", "bhojpuri gana", "bhojpuri gaana",
-                "pawan singh", "khesari lal", "khesari lal yadav",
-                "ritesh pandey", "shilpi raj", "pramod premi",
-                "neelkamal singh", "arvind akela kallu", "ankush raja",
-                "gunjan singh", "rajesh raja", "rakesh mishra",
-            ],
-            "punjabi": ["punjabi", "ਪੰਜਾਬੀ", "sidhu moose wala", "karan aujla", "diljit dosanjh", "amrit maan"],
-            "haryanvi": ["haryanvi", "हरियाणवी", "haryanavi", "sapna choudhary", "gulzaar chhaniwala", "masoom sharma"],
-            "rajasthani": ["rajasthani", "राजस्थानी", "marwadi", "मारवाड़ी"],
-            "marathi": ["marathi", "मराठी", "marathi song", "marathi songs"],
-            "bengali": ["bengali", "বাংলা", "bangla song", "bengali song", "bengali songs"],
-            "tamil": ["tamil", "தமிழ்", "tamil song", "tamil songs"],
-            "telugu": ["telugu", "తెలుగు", "telugu song", "telugu songs"],
-            "kannada": ["kannada", "ಕನ್ನಡ", "kannada song", "kannada songs"],
-            "malayalam": ["malayalam", "മലയാളം", "malayalam song", "malayalam songs"],
-            "odia": ["odia", "oriya", "ଓଡ଼ିଆ", "odia song", "odia songs"],
-            "assamese": ["assamese", "অসমীয়া", "assamese song", "assamese songs"],
-            "gujarati": ["gujarati", "ગુજરાતી", "gujarati song", "gujarati songs"],
-            "hindi": ["hindi", "हिंदी", "hindi song", "hindi songs"],
+            "bhojpuri": ["bhojpuri", "भोजपुरी", "bhojpuriya", "pawan singh", "khesari lal", "khesari lal yadav", "ritesh pandey", "shilpi raj", "pramod premi", "neelkamal singh", "arvind akela kallu", "ankush raja", "gunjan singh", "rajesh raja", "rakesh mishra"],
+            "punjabi": ["punjabi", "ਪੰਜਾਬੀ", "sidhu moose wala", "sidhu moosewala", "karan aujla", "diljit dosanjh", "amrit maan", "ap dhillon", "shubh", "gippy grewal", "jazzy b", "babbu maan"],
+            "haryanvi": ["haryanvi", "haryanavi", "हरियाणवी", "sapna choudhary", "gulzaar chhaniwala", "masoom sharma", "renuka panwar", "amit dhull"],
+            "rajasthani": ["rajasthani", "राजस्थानी", "marwadi", "मारवाड़ी", "rajasthani song", "rajasthani songs"],
+            "marathi": ["marathi", "मराठी", "marathi song", "marathi songs", "ajay atul", "swapnil bandodkar", "avdhoot gupte"],
+            "bengali": ["bengali", "বাংলা", "bangla", "bangla song", "bengali song", "bengali songs", "arijit singh bengali", "shreya ghoshal bengali"],
+            "tamil": ["tamil", "தமிழ்", "tamil song", "tamil songs", "anirudh", "ar rahman tamil", "vijay tamil", "ilaiyaraaja"],
+            "telugu": ["telugu", "తెలుగు", "telugu song", "telugu songs", "thaman s", "devi sri prasad", "sid sriram telugu"],
+            "kannada": ["kannada", "ಕನ್ನಡ", "kannada song", "kannada songs", "raghu dixit", "vijay prakash"],
+            "malayalam": ["malayalam", "മലയാളം", "malayalam song", "malayalam songs", "vineeth sreenivasan", "shaan rahman"],
+            "odia": ["odia", "oriya", "ଓଡ଼ିଆ", "odia song", "odia songs", "oriya song"],
+            "assamese": ["assamese", "অসমীয়া", "assamese song", "assamese songs", "zubeen garg", "papon assamese"],
+            "gujarati": ["gujarati", "ગુજરાતી", "gujarati song", "gujarati songs", "kinjal dave", "geeta rabari", "jignesh kaviraj", "devayat khavad"],
+            "hindi": ["hindi", "हिंदी", "hindi song", "hindi songs", "bollywood", "bollywood song", "bollywood songs"],
+            "urdu": ["urdu", "اردو", "urdu song", "urdu songs", "pakistani song", "pakistani songs", "qawwali"],
+            "nepali": ["nepali", "नेपाली", "nepali song", "nepali songs", "nepali music"],
+            "sindhi": ["sindhi", "سنڌي", "सिंधी", "sindhi song", "sindhi songs"],
+            "konkani": ["konkani", "कोंकणी", "konkani song", "konkani songs"],
+            "kashmiri": ["kashmiri", "کٲشُر", "कश्मीरी", "kashmiri song", "kashmiri songs"],
+            "manipuri": ["manipuri", "meitei", "মৈতৈ", "manipuri song", "manipuri songs"],
+            "santali": ["santali", "ᱥᱟᱱᱛᱟᱲᱤ", "santali song", "santali songs"],
+            "english": ["english", "english song", "english songs", "american song", "british song", "pop song", "hollywood song"],
+            "spanish": ["spanish", "español", "spanish song", "spanish songs", "latin song", "reggaeton"],
+            "portuguese": ["portuguese", "português", "brazilian song", "brazilian songs"],
+            "french": ["french", "français", "french song", "french songs"],
+            "german": ["german", "deutsch", "german song", "german songs"],
+            "italian": ["italian", "italiano", "italian song", "italian songs"],
+            "korean": ["korean", "한국어", "k-pop", "kpop", "korean song", "korean songs"],
+            "japanese": ["japanese", "日本語", "j-pop", "jpop", "japanese song", "japanese songs"],
+            "arabic": ["arabic", "العربية", "arabic song", "arabic songs"],
+            "turkish": ["turkish", "türkçe", "turkish song", "turkish songs"],
         }
 
-        # Explicit Bhojpuri markers first.
-        for word in language_keywords["bhojpuri"]:
-            if word in text:
-                return "Bhojpuri"
+        # Strong, script-based signals where the writing system is unique.
+        script_languages = [
+            ("punjabi", r"[\u0A00-\u0A7F]"),
+            ("bengali", r"[\u0980-\u09FF]"),
+            ("gujarati", r"[\u0A80-\u0AFF]"),
+            ("odia", r"[\u0B00-\u0B7F]"),
+            ("tamil", r"[\u0B80-\u0BFF]"),
+            ("telugu", r"[\u0C00-\u0C7F]"),
+            ("kannada", r"[\u0C80-\u0CFF]"),
+            ("malayalam", r"[\u0D00-\u0D7F]"),
+            ("santali", r"[\u1C50-\u1C7F]"),
+            ("korean", r"[\uAC00-\uD7AF]"),
+            ("japanese", r"[\u3040-\u30FF]"),
+            ("arabic", r"[\u0600-\u06FF]"),
+        ]
 
-        # Other regional-language markers.
+        # Explicit words/artist names beat generic script detection.
         for lang, words in language_keywords.items():
-            if lang == "bhojpuri":
-                continue
             for word in words:
                 if word in text:
                     return lang.title()
 
-        # Devanagari is useful as a Hindi/Bhojpuri fallback, but don't call it
-        # Bhojpuri without a Bhojpuri-specific marker.
+        for lang, pattern in script_languages:
+            if re.search(pattern, text):
+                return lang.title()
+
+        # Devanagari is shared by Hindi, Bhojpuri, Marathi, Haryanvi, Nepali,
+        # etc.; without a language marker it is intentionally treated as Hindi
+        # rather than guessing a regional language.
         if re.search(r"[\u0900-\u097F]", text):
             return "Hindi"
 
         return None
+
+    @classmethod
+    def _language_matches(cls, language_hint: str | None, title: str = "", channel: str = "") -> bool:
+        """Strictly validate a candidate against the requested language."""
+        if not language_hint:
+            return True
+        detected = cls._detect_language_hint(title=title, channel=channel)
+        if not detected:
+            return False
+        return detected.casefold() == language_hint.casefold()
+
+    @staticmethod
+    def _is_compilation_or_long_mix(title: str, duration_sec: int) -> bool:
+        title_l = str(title or "").lower()
+        blocked = (
+            "nonstop", "non-stop", "jukebox", "full album", "album", "compilation",
+            "collection", "evergreen songs", "evergreen", "best of", "greatest hits",
+            "hits collection", "playlist", "mix", "mashup", "medley", "dj set", "dj mix",
+            "remix mix", "song collection", "all songs", "top songs", "30 songs", "50 songs",
+            "100 songs", "1 hour", "2 hour", "1 hr", "2 hr",
+        )
+        if any(word in title_l for word in blocked):
+            return True
+        return int(duration_sec or 0) > 10 * 60
 
     async def _related_from_search(
         self, current: Track, played: set[str], played_titles: set[str],
@@ -612,6 +633,8 @@ class YouTube:
                     continue
                 if self._is_compilation_or_long_mix(result_title, duration_sec):
                     continue
+                if language_hint and not self._language_matches(language_hint, result_title, data.get("channel", {}).get("name", "")):
+                    continue
 
                 seen_ids.add(eid)
                 seen_titles.add(norm)
@@ -634,19 +657,17 @@ class YouTube:
         if not candidates:
             return None
 
-        # Prefer candidates whose title/channel explicitly matches the
-        # detected language. Unknown-language metadata is still allowed so
-        # autoplay does not become too restrictive.
         if language_hint:
-            def score(track):
-                text = f"{track.title or ''} {track.channel_name or ''}"
-                detected = self._detect_language_hint(title=track.title or "", channel=track.channel_name or "")
-                return 1 if detected == language_hint else 0
-            candidates.sort(key=score, reverse=True)
-            best_score = score(candidates[0])
-            top = [c for c in candidates if score(c) == best_score]
-            random.shuffle(top)
-            return top[0]
+            candidates = [
+                c for c in candidates
+                if self._language_matches(language_hint, c.title or "", c.channel_name or "")
+            ]
+            if not candidates:
+                logger.warning(f"[Autoplay] No strict {language_hint} candidate found.")
+                return None
+
+        random.shuffle(candidates)
+        return candidates[0]
 
         random.shuffle(candidates)
         return candidates[0]
