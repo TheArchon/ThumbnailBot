@@ -19,6 +19,21 @@ async def _noop():
 
 
 class TgCall(PyTgCalls):
+
+    async def _safe_play(self, chat_id, stream, retries=2):
+        """Start a voice-chat stream with retries for transient FFmpeg timeouts."""
+        last_error = None
+        for attempt in range(retries + 1):
+            try:
+                return await self._safe_play(chat_id, stream)
+            except (TimeoutError, asyncio.TimeoutError) as exc:
+                last_error = exc
+                if attempt >= retries:
+                    raise
+                await asyncio.sleep(0.35 * (attempt + 1))
+        if last_error:
+            raise last_error
+
     def __init__(self):
         self.clients = []
         self.autoplay_history: dict[int, set] = {}
