@@ -11,8 +11,12 @@ from ArchonMusic import logger, config
 from ArchonMusic.helpers import Track, utils
 
 API_URL = os.environ.get("API_URL", "https://web.riteshyt.in").rstrip("/")
+API_KEY = os.environ.get("API_KEY", "")
 
-API_KEY = os.environ.get("API_KEY", "riteshfreea6901be19d3f420aad766250")
+# ShrutiBots: server-side YouTube downloader.
+# Set SHRUTI_API_KEY to the key issued by ShrutiBots.
+SHRUTI_API_URL = os.environ.get("SHRUTI_API_URL", "https://shrutibots.site").rstrip("/")
+SHRUTI_API_KEY = os.environ.get("SHRUTI_API_KEY", "")
 
 DOWNLOAD_DIR = "downloads"
 
@@ -30,29 +34,34 @@ def _youtube_video_id(value: str) -> str | None:
 
 
 async def _download_api_file(video_id: str, video: bool = False) -> str | None:
+    """Download through ShrutiBots instead of yt-dlp on the Heroku worker."""
     video_id = _youtube_video_id(video_id) or str(video_id or "").strip()
     if not video_id:
         return None
+    if not SHRUTI_API_KEY:
+        logger.error("[YouTube] SHRUTI_API_KEY is not configured.")
+        return None
+
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    ext = "mp4" if video else "mp3"
+    ext = "mp4" if video else "m4a"
     path = os.path.join(DOWNLOAD_DIR, f"{video_id}.{ext}")
     if os.path.exists(path) and os.path.getsize(path) > 0:
         return path
 
-    if not API_URL:
-        return None
-
-    if API_KEY:
-        stream_url = f"{API_URL}/downloads/{quote(API_KEY, safe='')}/youtube.com/{video_id}.{ext}"
-    else:
-        stream_url = f"{API_URL}/downloads/stream?query={quote('https://www.youtube.com/watch?v=' + video_id, safe='')}&dl_type={'video' if video else 'audio'}"
-
+    youtube_url = f"https://www.youtube.com/watch?v={video_id}"
+    params = {
+        "url": youtube_url,
+        "type": "video" if video else "audio",
+        "api_key": SHRUTI_API_KEY,
+    }
     try:
         timeout = aiohttp.ClientTimeout(total=600 if video else 300)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(stream_url) as resp:
-                if resp.status not in (200, 206):
-                    logger.warning(f"[YouTube] Download API HTTP {resp.status} for {video_id}")
+            async with session.get(f"{SHRUTI_API_URL}/download", params=params) as resp:
+                content_type = (resp.headers.get("Content-Type") or "").lower()
+                if resp.status != 200 or "json" in content_type or "text/" in content_type:
+                    body = await resp.text()
+                    logger.warning(f"[YouTube] Shruti API HTTP {resp.status}: {body[:300]}")
                     return None
                 with open(path, "wb") as f:
                     async for chunk in resp.content.iter_chunked(131072):
@@ -60,7 +69,7 @@ async def _download_api_file(video_id: str, video: bool = False) -> str | None:
         if os.path.exists(path) and os.path.getsize(path) > 0:
             return path
     except Exception as e:
-        logger.warning(f"[YouTube] Download API failed for {video_id}: {e}")
+        logger.warning(f"[YouTube] Shruti API download failed for {video_id}: {e}")
     try:
         if os.path.exists(path):
             os.remove(path)
@@ -91,6 +100,15 @@ class YouTube:
         )
         self.cookie_dir = "AloneX/cookies"
 
+    async def get_client(self):
+        """Return a reusable aiohttp session for the API requests."""
+        client = getattr(self, "_client", None)
+        if client is None or client.closed:
+            self._client = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=600, connect=10)
+            )
+        return self._client
+
     def get_cookies(self):
         if not os.path.exists(self.cookie_dir):
             return None
@@ -119,8 +137,13 @@ class YouTube:
         return bool(re.match(self.regex, url))
 
     def invalid(self, url: str) -> bool:
-        """Compatibility helper used by the /play URL validator."""
-        return not self.valid(url)
+        """Return True only for malformed YouTube URLs."""
+        if not url:
+            return False
+        return bool(re.match(
+            r"https?://(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)/",
+            str(url),
+        )) and not self.valid(url)
 
     async def search(self, query: str, m_id: int, video: bool = False) -> Track | None:
         """Resolve a song/search query through the server-side API first.
@@ -228,6 +251,37 @@ class YouTube:
                 return track
         except Exception as e:
             logger.warning(f"[YouTube] Direct URL API resolution failed: {e}")
+
+        # Metadata fallback that does not use yt-dlp: YouTube oEmbed.
+        # This keeps direct links usable when the search API is unavailable.
+        try:
+            clean_url = url.split("&")[0]
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as session:
+                async with session.get(
+                    "https://www.youtube.com/oembed",
+                    params={"url": clean_url, "format": "json"},
+                ) as response:
+                    if response.status == 200:
+                        meta = await response.json()
+                        vid = _youtube_video_id(url)
+                        track = Track(
+                            id=vid,
+                            channel_name=meta.get("author_name"),
+                            duration="00:00",
+                            duration_sec=0,
+                            message_id=m_id,
+                            title=(meta.get("title") or "YouTube")[:80],
+                            thumbnail=meta.get("thumbnail_url"),
+                            url=clean_url,
+                            view_count="",
+                            video=video,
+                        )
+                        self.track_context[str(vid)] = url
+                        return track
+        except Exception as e:
+            logger.warning(f"[YouTube] oEmbed metadata fallback failed: {e}")
         return None
 
     async def stream_url(self, video_id: str, video: bool = False) -> str | None:
@@ -246,23 +300,26 @@ class YouTube:
         # server-side IP. Returning its media endpoint first avoids the
         # YouTube anti-bot challenge seen on Heroku/cloud IPs and lets
         # ffmpeg/pytgcalls start playback without downloading the whole file.
-        api_stream = None
-        if not video:
+        # ShrutiBots returns the media response directly. Its /stream endpoint
+        # can be consumed by ffmpeg/pytgcalls without running yt-dlp on Heroku.
+        if SHRUTI_API_KEY:
             api_stream = (
-                f"{API_URL}/download?url={quote(normalized_id, safe='')}"
-                f"&type=audio&api_key={quote(API_KEY, safe='')}"
+                f"{SHRUTI_API_URL}/stream/{normalized_id}"
+                f"?api_key={quote(SHRUTI_API_KEY, safe='')}"
             )
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.get(
                         api_stream, headers={"Range": "bytes=0-1"},
-                        timeout=aiohttp.ClientTimeout(total=8)
+                        timeout=aiohttp.ClientTimeout(total=10)
                     ) as resp:
-                        if resp.status in (200, 206):
+                        content_type = (resp.headers.get("Content-Type") or "").lower()
+                        if resp.status in (200, 206) and "json" not in content_type:
                             return api_stream
-                        logger.warning(f"[YouTube] Audio API HTTP {resp.status}; using yt-dlp fallback.")
+                        body = await resp.text()
+                        logger.warning(f"[YouTube] Shruti stream HTTP {resp.status}: {body[:200]}")
             except Exception as e:
-                logger.warning(f"[YouTube] Audio API check failed: {e}")
+                logger.warning(f"[YouTube] Shruti stream check failed: {e}")
 
         url = raw_id if raw_id.startswith("http") else f"{self.base}{normalized_id}"
         cookie = self.get_cookies()
