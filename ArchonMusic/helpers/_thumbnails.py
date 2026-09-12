@@ -14,8 +14,8 @@ import os
 import aiohttp
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
-from KartikMusic import config
-from KartikMusic.helpers import Track
+from ArchonMusic import config
+from ArchonMusic.helpers import Track
 
 
 class Thumbnail:
@@ -23,8 +23,8 @@ class Thumbnail:
         self.rect = (914, 514)
         self.fill = (255, 255, 255)
         try:
-            self.font1 = ImageFont.truetype("KartikMusic/helpers/Raleway-Bold.ttf", 30)
-            self.font2 = ImageFont.truetype("KartikMusic/helpers/Inter-Light.ttf", 30)
+            self.font1 = ImageFont.truetype("ArchonMusic/helpers/Raleway-Bold.ttf", 30)
+            self.font2 = ImageFont.truetype("ArchonMusic/helpers/Inter-Light.ttf", 30)
         except Exception:
             self.font1 = ImageFont.load_default()
             self.font2 = ImageFont.load_default()
