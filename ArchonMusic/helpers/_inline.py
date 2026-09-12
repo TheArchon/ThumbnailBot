@@ -45,12 +45,29 @@ class Inline:
                 ]
             )
         elif timer:
+            # Change the timer button colour whenever the timer advances.
+            # The timer is updated periodically by the player, so deriving the
+            # style from the displayed seconds gives a stable colour per tick
+            # without relying on random selection (which could repeat).
+            timer_styles = [
+                ButtonStyle.PRIMARY,
+                ButtonStyle.SUCCESS,
+                ButtonStyle.DANGER,
+                ButtonStyle.DEFAULT,
+            ]
+            try:
+                parts = str(timer).split(":")
+                seconds = int(parts[-1]) + (int(parts[-2]) * 60 if len(parts) >= 2 else 0)
+                timer_style = timer_styles[seconds % len(timer_styles)]
+            except (ValueError, TypeError):
+                timer_style = ButtonStyle.PRIMARY
+
             keyboard.append(
                 [
                     self.ikb(
                         text=timer,
                         callback_data=f"controls status {chat_id}",
-                        style=ButtonStyle.PRIMARY,
+                        style=timer_style,
                     )
                 ]
             )
