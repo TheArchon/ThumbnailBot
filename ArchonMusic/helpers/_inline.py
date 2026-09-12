@@ -12,8 +12,8 @@ import random
 
 from pyrogram import enums, types
 
-from KartikMusic import app, config, lang
-from KartikMusic.core.lang import lang_codes
+from ArchonMusic import app, config, lang
+from ArchonMusic.core.lang import lang_codes
 
 
 class Inline:
