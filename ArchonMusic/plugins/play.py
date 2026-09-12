@@ -12,9 +12,9 @@ from pathlib import Path
 
 from pyrogram import filters, types
 
-from KartikMusic import Kartik, app, config, db, lang, queue, tg, yt
-from KartikMusic.helpers import buttons, utils
-from KartikMusic.helpers._play import checkUB
+from ArchonMusic import Kartik, app, config, db, lang, queue, tg, yt
+from ArchonMusic.helpers import buttons, utils
+from ArchonMusic.helpers._play import checkUB
 
 
 def playlist_to_queue(chat_id: int, tracks: list) -> str:
