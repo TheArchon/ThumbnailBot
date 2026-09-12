@@ -54,7 +54,33 @@ async def download_song(link: str) -> str:
         if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
             return file_path
         return None
-    except Exception:
+    except Exception as api_error:
+        logger.warning(f"[YouTube] Audio API download failed: {api_error}; trying yt-dlp fallback.")
+        try:
+            opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "noplaylist": True,
+                "format": "bestaudio/best",
+                "outtmpl": file_path,
+                "retries": 2,
+                "extractor_retries": 2,
+                "socket_timeout": 15,
+            }
+            cookie = YouTube().get_cookies()
+            if cookie:
+                opts["cookiefile"] = cookie
+            def extract():
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
+            await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(None, extract),
+                timeout=180,
+            )
+            if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                return file_path
+        except Exception as fallback_error:
+            logger.error(f"[YouTube] Audio yt-dlp fallback failed: {fallback_error}")
         if os.path.exists(file_path):
             try:
                 os.remove(file_path)
@@ -166,6 +192,54 @@ class YouTube:
         except Exception as e:
             logger.error(f"Search error: {e}")
         return None
+
+    async def track_from_url(self, url: str, m_id: int, video: bool = False) -> Track | None:
+        """Resolve a direct YouTube URL into a Track without text search."""
+        video_id = _youtube_video_id(url)
+        if not video_id:
+            return None
+        try:
+            opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "skip_download": True,
+                "noplaylist": True,
+                "socket_timeout": 10,
+            }
+            cookie = self.get_cookies()
+            if cookie:
+                opts["cookiefile"] = cookie
+            def extract():
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    return ydl.extract_info(
+                        f"https://www.youtube.com/watch?v={video_id}", download=False
+                    )
+            data = await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(None, extract),
+                timeout=15,
+            )
+            if not data:
+                return None
+            duration = int(data.get("duration") or 0)
+            if duration <= 0:
+                return None
+            thumbs = data.get("thumbnails") or []
+            thumbnail = thumbs[-1].get("url", "").split("?")[0] if thumbs else None
+            return Track(
+                id=video_id,
+                channel_name=data.get("channel") or data.get("uploader") or "YouTube",
+                duration=self._format_duration(duration),
+                duration_sec=duration,
+                message_id=m_id,
+                title=(data.get("title") or "Unknown")[:80],
+                thumbnail=thumbnail,
+                url=f"https://www.youtube.com/watch?v={video_id}",
+                view_count=self._format_views(data.get("view_count")),
+                video=video,
+            )
+        except Exception as e:
+            logger.warning(f"[YouTube] Direct URL metadata failed: {e}")
+            return None
 
     async def stream_url(self, video_id: str, video: bool = False) -> str | None:
         """Resolve a direct media URL for immediate playback.
