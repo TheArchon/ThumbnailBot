@@ -12,7 +12,7 @@ from pathlib import Path
 
 from pyrogram import filters, types
 
-from ArchonMusic import Kartik, app, config, db, lang, queue, tg, yt
+from ArchonMusic import ArchonMusic, app, config, db, lang, queue, tg, yt
 from ArchonMusic.helpers import buttons, utils
 from ArchonMusic.helpers._play import checkUB
 
