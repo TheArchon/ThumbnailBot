@@ -17,8 +17,20 @@ API_KEY = os.environ.get("SHRUTI_API_KEY", "ShrutiBotsfhGT4c09sFRRuQIB6yCG") ## 
 DOWNLOAD_DIR = "downloads"
 
 
+def _youtube_video_id(value: str) -> str | None:
+    value = str(value or "").strip()
+    if not value:
+        return None
+    m = re.search(r"(?:v=|youtu\.be/|youtube\.com/(?:shorts/|embed/|live/))([A-Za-z0-9_-]{11})", value)
+    if m:
+        return m.group(1)
+    if re.fullmatch(r"[A-Za-z0-9_-]{11}", value):
+        return value
+    return None
+
+
 async def download_song(link: str) -> str:
-    video_id = link.split("v=")[-1].split("&")[0] if "v=" in link else link
+    video_id = _youtube_video_id(link)
     if not video_id or len(video_id) < 3:
         return None
 
@@ -52,7 +64,7 @@ async def download_song(link: str) -> str:
 
 
 async def download_video(link: str) -> str:
-    video_id = link.split("v=")[-1].split("&")[0] if "v=" in link else link
+    video_id = _youtube_video_id(link)
     if not video_id or len(video_id) < 3:
         return None
 
@@ -170,17 +182,28 @@ class YouTube:
         # server-side IP. Returning its media endpoint first avoids the
         # YouTube anti-bot challenge seen on Heroku/cloud IPs and lets
         # ffmpeg/pytgcalls start playback without downloading the whole file.
+        api_stream = None
         if not video:
             api_stream = (
                 f"{API_URL}/download?url={quote(raw_id, safe='')}"
                 f"&type=audio&api_key={quote(API_KEY, safe='')}"
             )
-            return api_stream
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        api_stream, headers={"Range": "bytes=0-1"},
+                        timeout=aiohttp.ClientTimeout(total=8)
+                    ) as resp:
+                        if resp.status in (200, 206):
+                            return api_stream
+                        logger.warning(f"[YouTube] Audio API HTTP {resp.status}; using yt-dlp fallback.")
+            except Exception as e:
+                logger.warning(f"[YouTube] Audio API check failed: {e}")
 
         url = raw_id if raw_id.startswith("http") else f"{self.base}{raw_id}"
         cookie = self.get_cookies()
 
-        clients = ["web", "android", "tv", "web_safari"]
+        clients = ["android", "web_safari", "web", "tv"]
         for client in clients:
             opts = {
                 "quiet": True,
