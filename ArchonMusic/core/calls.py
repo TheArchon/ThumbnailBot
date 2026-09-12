@@ -22,8 +22,8 @@ from pyrogram.types import InputMediaPhoto, Message
 from pytgcalls import PyTgCalls, exceptions, types
 from pytgcalls.pytgcalls_session import PyTgCallsSession
 
-from KartikMusic import app, config, db, lang, logger, queue, thumb, userbot, yt
-from KartikMusic.helpers import Media, Track, buttons
+from ArchonMusic import app, config, db, lang, logger, queue, thumb, userbot, yt
+from ArchonMusic.helpers import Media, Track, buttons
 
 
 class TgCall(PyTgCalls):
