@@ -11,7 +11,7 @@ from ArchonMusic import logger, config
 from ArchonMusic.helpers import Track, utils
 
 RITESH_API_URL = os.environ.get("API_URL", "https://web.riteshyt.in").rstrip("/")
-RITESH_API_KEY = os.environ.get("API_KEY", "")
+RITESH_API_KEY = os.environ.get("API_KEY", "riteshfreea6901be19d3f420aad766250")
 
 SHRUTI_API_URL = os.environ.get("SHRUTI_API_URL", "https://shrutibots.site").rstrip("/")
 SHRUTI_API_KEY = os.environ.get("SHRUTI_API_KEY", "")
