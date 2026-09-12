@@ -11,12 +11,12 @@ from ArchonMusic import logger, config
 from ArchonMusic.helpers import Track, utils
 
 API_URL = os.environ.get("API_URL", "https://web.riteshyt.in").rstrip("/")
-API_KEY = os.environ.get("API_KEY", "")
+API_KEY = os.environ.get("API_KEY", "riteshfreea6901be19d3f420aad766250")
 
 # ShrutiBots: server-side YouTube downloader.
 # Set SHRUTI_API_KEY to the key issued by ShrutiBots.
 SHRUTI_API_URL = os.environ.get("SHRUTI_API_URL", "https://shrutibots.site").rstrip("/")
-SHRUTI_API_KEY = os.environ.get("SHRUTI_API_KEY", "")
+SHRUTI_API_KEY = os.environ.get("SHRUTI_API_KEY", "ShrutiBotsfhGT4c09sFRRuQIB6yCG")
 
 DOWNLOAD_DIR = "downloads"
 
