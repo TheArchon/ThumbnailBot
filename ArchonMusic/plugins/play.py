@@ -57,12 +57,13 @@ async def play_hndlr(
             tracks.remove(file)
             file.message_id = sent.id
         else:
-            # Direct YouTube links must be resolved as URLs, not sent to the
-            # text-search engine. This avoids "FAILED TO PROCESS THE QUERY"
-            # and lets watch/shorts/youtu.be links reach the downloader.
-            file = await yt.search(url, sent.id, video=video)
-            if not file and hasattr(yt, "track_from_url"):
+            # Resolve direct YouTube URLs through the server-side API first.
+            # Never feed a URL into VideosSearch on Heroku/cloud IPs.
+            file = None
+            if hasattr(yt, "track_from_url"):
                 file = await yt.track_from_url(url, sent.id, video=video)
+            if not file:
+                file = await yt.search(url, sent.id, video=video)
 
         if not file:
             return await sent.edit_text(
@@ -140,8 +141,11 @@ async def play_hndlr(
 
     if not file.file_path:
         fname = f"downloads/{file.id}.{'mp4' if video else 'webm'}"
+        mp3name = f"downloads/{file.id}.mp3"
         if Path(fname).exists():
             file.file_path = fname
+        elif not video and Path(mp3name).exists():
+            file.file_path = mp3name
         else:
             # Stream directly from the download API's URL instead of
             # waiting for the full file to save to disk first — ffmpeg
