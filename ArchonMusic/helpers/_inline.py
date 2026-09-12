@@ -1,188 +1,161 @@
-from pyrogram import types
+#
+# Copyright (C) 2025-present by TheAloneTeam@Github, < https://github.com/TheAloneTeam >.
+#
+# This file is part of < https://github.com/TheAloneTeam/KartikMusic > project,
+# and is released under the "MIT License".
+# Please see < https://github.com/TheAloneTeam/KartikMusic/blob/master/LICENSE >
+#
+# All rights reserved.
+#
 
-from ArchonMusic import app, config, lang
-from ArchonMusic.core.lang import lang_codes
-from pyrogram.enums import ButtonStyle
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+import random
+
+from pyrogram import enums, types
+
+from KartikMusic import app, config, lang
+from KartikMusic.core.lang import lang_codes
 
 
 class Inline:
     def __init__(self):
         self.ikm = types.InlineKeyboardMarkup
-        self.ikb = types.InlineKeyboardButton
+
+    def ikb(self, text: str, **kwargs) -> types.InlineKeyboardButton:
+        styles = [
+            enums.ButtonStyle.DANGER,
+            enums.ButtonStyle.PRIMARY,
+            enums.ButtonStyle.SUCCESS,
+            enums.ButtonStyle.DEFAULT,
+        ]
+        return types.InlineKeyboardButton(
+            text=text, style=random.choice(styles), **kwargs
+        )
 
     def cancel_dl(self, text) -> types.InlineKeyboardMarkup:
-        return self.ikm(
-            [
-                [
-                    self.ikb(
-                        text=text,
-                        callback_data="cancel_dl",
-                    )
-                ]
-            ]
-        )
+        return self.ikm([[self.ikb(text=text, callback_data="cancel_dl")]])
 
     def controls(
         self,
         chat_id: int,
-        status: str = None,
-        timer: str = None,
+        status: str | None = None,
+        timer: str | None = None,
         remove: bool = False,
         more: bool = False,
-        thumb: bool = None,
-        lang: dict = None,
+        autoplay: bool | None = None,
+        thumb: bool | None = None,
+        lang: dict | None = None,
     ) -> types.InlineKeyboardMarkup:
         keyboard = []
         if status:
             keyboard.append(
-                [
-                    self.ikb(
-                        text=status,
-                        callback_data=f"controls status {chat_id}",
-                        style=ButtonStyle.PRIMARY,
-                    )
-                ]
+                [self.ikb(text=status, callback_data=f"controls status {chat_id}")]
             )
         elif timer:
-            # Change timer button colour on every timer value update.
-            # The timer is normally MM:SS or HH:MM:SS, so use its seconds
-            # value to select a different Telegram button style each tick.
-            timer_styles = [
-                ButtonStyle.PRIMARY,
-                ButtonStyle.SUCCESS,
-                ButtonStyle.DANGER,
-                ButtonStyle.DEFAULT,
-            ]
-            try:
-                parts = [int(x) for x in str(timer).split(":")]
-                total_seconds = 0
-                for value in parts:
-                    total_seconds = total_seconds * 60 + value
-                timer_style = timer_styles[total_seconds % len(timer_styles)]
-            except (ValueError, TypeError):
-                timer_style = ButtonStyle.PRIMARY
-
             keyboard.append(
-                [
-                    self.ikb(
-                        text=timer,
-                        callback_data=f"controls status {chat_id}",
-                        style=timer_style,
-                    )
-                ]
+                [self.ikb(text=timer, callback_data=f"controls status {chat_id}")]
             )
 
         if not remove:
             if more:
-                _on = "ᴏɴ ☜"
-                _off = "ᴏғғ ☜"
-                
+                _on = "Enabled ✅"
+                _off = "Disabled ❌"
                 keyboard.append(
                     [
+                        self.ikb(text="Autoplay", callback_data="help autoplay"),
                         self.ikb(
-                            text="Thumbnail",
-                            callback_data="help thumb",
-                            style=ButtonStyle.SUCCESS,
-                        ),
-                        self.ikb(
-                            text=_on if thumb else _off,
-                            callback_data=f"controls cthumb {chat_id}",
-                            style=ButtonStyle.SUCCESS,
+                            text=_on if autoplay else _off,
+                            callback_data=f"controls cautoplay {chat_id}",
                         ),
                     ]
                 )
                 keyboard.append(
                     [
+                        self.ikb(text="Thumbnail", callback_data="help thumb"),
                         self.ikb(
-                            text="ʙᴀᴄᴋ ⎋",
-                            callback_data=f"controls back {chat_id}",
-                            style=ButtonStyle.DANGER,
-                        )
+                            text=_on if thumb else _off,
+                            callback_data=f"controls cthumb {chat_id}",
+                        ),
                     ]
+                )
+                keyboard.append(
+                    [self.ikb(text="Back ⬅️", callback_data=f"controls back {chat_id}")]
                 )
             else:
                 keyboard.append(
                     [
+                        self.ikb(text="▷", callback_data=f"controls resume {chat_id}"),
+                        self.ikb(text="II", callback_data=f"controls pause {chat_id}"),
+                        self.ikb(text="⥁", callback_data=f"controls replay {chat_id}"),
+                        self.ikb(text="‣‣I", callback_data=f"controls skip {chat_id}"),
+                        self.ikb(text="▢", callback_data=f"controls stop {chat_id}"),
+                    ]
+                )
+                keyboard.append(
+                    [
                         self.ikb(
-                            text="▷", 
-                            callback_data=f"controls resume {chat_id}",
+                            text="-20s", callback_data=f"controls seek {chat_id} -20"
                         ),
+                        self.ikb(text="More", callback_data=f"controls more {chat_id}"),
                         self.ikb(
-                            text="II", 
-                            callback_data=f"controls pause {chat_id}",
-                        ),
-                        self.ikb(
-                            text="⥁", 
-                            callback_data=f"controls replay {chat_id}",
-                        ),
-                        self.ikb(
-                            text="‣‣I", 
-                            callback_data=f"controls skip {chat_id}",
-                        ),
-                        self.ikb(
-                            text="▢", 
-                            callback_data=f"controls stop {chat_id}",
+                            text="+20s", callback_data=f"controls seek {chat_id} 20"
                         ),
                     ]
                 )
-                
+                keyboard.append(
+                    [
+                        self.ikb(
+                            text=lang["add_mee"] if lang else "Add Me",
+                            url=f"https://t.me/{app.username}?startgroup=true",
+                        ),
+                        self.ikb(
+                            text="Close ✘", callback_data=f"controls close {chat_id}"
+                        ),
+                    ]
+                )
         return self.ikm(keyboard)
 
     def help_markup(
         self, _lang: dict, back: bool = False
     ) -> types.InlineKeyboardMarkup:
-        
         if back:
             rows = [
                 [
-                    self.ikb(
-                        text=_lang["back"],
-                        callback_data="help back",
-                        style=ButtonStyle.DANGER,
-                    ),
+                    self.ikb(text=_lang["back"], callback_data="help back"),
+                    self.ikb(text=_lang["cancel"], callback_data="help close"),
                 ]
             ]
         else:
-            rows = []
-                
-            cbs = [
-                "admins", "auth", "blist", "lang", "ping", "play", 
-                "queue", "stats", "sudo", "thumb", "vclog", "autoplay",
+            rows = [
+                [
+                    self.ikb(
+                        text=_lang["add_me"],
+                        url=f"https://t.me/{app.username}?startgroup=true",
+                    )
+                ]
             ]
-            
-            # Keep help buttons clean: button name only.
-            button_names = {
-                "admins": "ADMINS",
-                "auth": "AUTH",
-                "blist": "BLACKLIST",
-                "lang": "LANGUAGE",
-                "ping": "PING",
-                "play": "PLAY",
-                "queue": "QUEUE",
-                "stats": "STATS",
-                "sudo": "SUDO",
-                "thumb": "THUMB",
-                "vclog": "VC LOG",
-                "autoplay": "AUTOPLAY",
-            }
-
+            cbs = [
+                "admins",
+                "auth",
+                "blist",
+                "lang",
+                "ping",
+                "play",
+                "queue",
+                "stats",
+                "sudo",
+                "thumb",
+                "vclog",
+                "autoplay",
+            ]
             buttons = [
-                self.ikb(
-                    text=button_names[cb],
-                    callback_data=f"help {cb}",
-                    style=ButtonStyle.SUCCESS,
-                )
-                for cb in cbs
+                self.ikb(text=_lang[f"help_{i}"], callback_data=f"help {cb}")
+                for i, cb in enumerate(cbs)
             ]
             rows += [buttons[i : i + 3] for i in range(0, len(buttons), 3)]
             rows.append(
                 [
-                    self.ikb(
-                        text=_lang["back"],
-                        callback_data="help home",
-                        style=ButtonStyle.DANGER,
-                    ),
+                    self.ikb(text=_lang["back"], callback_data="help home"),
+                    self.ikb(text=_lang["cancel"], callback_data="help close"),
                 ]
             )
 
@@ -193,19 +166,14 @@ class Inline:
             [
                 [
                     self.ikb(
-                        text="Audio", 
-                        callback_data=f"song_download audio {vid_id}",
+                        text="Audio 🎵", callback_data=f"song_download audio {vid_id}"
                     ),
                     self.ikb(
-                        text="Video", 
-                        callback_data=f"song_download video {vid_id}",
+                        text="Video 🎬", callback_data=f"song_download video {vid_id}"
                     ),
                 ],
                 [
-                    self.ikb(
-                        text="Close", 
-                        callback_data="help close",
-                    ),
+                    self.ikb(text="Close ✘", callback_data="help close"),
                 ],
             ]
         )
@@ -217,7 +185,6 @@ class Inline:
             self.ikb(
                 text=f"{name} ({code}) {'✔️' if code == _lang else ''}",
                 callback_data=f"lang_change {code}",
-                style=ButtonStyle.PRIMARY,
             )
             for code, name in langs.items()
         ]
@@ -225,17 +192,7 @@ class Inline:
         return self.ikm(rows)
 
     def ping_markup(self, text: str) -> types.InlineKeyboardMarkup:
-        return self.ikm(
-            [
-                [
-                    self.ikb(
-                        text=text,
-                        url=config.SUPPORT_CHAT,
-                        style=ButtonStyle.PRIMARY,
-                    )
-                ]
-            ]
-        )
+        return self.ikm([[self.ikb(text=text, url=config.SUPPORT_CHAT)]])
 
     def play_queued(
         self, chat_id: int, item_id: str, _text: str
@@ -244,9 +201,7 @@ class Inline:
             [
                 [
                     self.ikb(
-                        text=_text,
-                        callback_data=f"controls force {chat_id} {item_id}",
-                        style=ButtonStyle.SUCCESS,
+                        text=_text, callback_data=f"controls force {chat_id} {item_id}"
                     )
                 ]
             ]
@@ -257,14 +212,7 @@ class Inline:
     ) -> types.InlineKeyboardMarkup:
         _action = "pause" if playing else "resume"
         return self.ikm(
-            [
-                [
-                    self.ikb(
-                        text=_text, 
-                        callback_data=f"controls {_action} {chat_id} q",
-                    )
-                ]
-            ]
+            [[self.ikb(text=_text, callback_data=f"controls {_action} {chat_id} q")]]
         )
 
     def settings_markup(
@@ -272,95 +220,69 @@ class Inline:
         lang: dict,
         admin_only: bool,
         cmd_delete: bool,
+        autoplay: bool,
         vclogger: bool,
         thumbnail: bool,
-        autoplay: bool,
         language: str,
         chat_id: int,
     ) -> types.InlineKeyboardMarkup:
-        _on = "ᴏɴ ☜"
-        _off = "ᴏғғ ☜"
-        
+        _on = "Enabled ✅"
+        _off = "Disabled ❌"
         return self.ikm(
             [
                 [
                     self.ikb(
                         text=lang["play_mode"] + " ➜",
                         callback_data="settings",
-                        style=ButtonStyle.SUCCESS,
                     ),
                     self.ikb(
-                        text=_on if admin_only else _off,
-                        callback_data="settings play",
-                        style=ButtonStyle.SUCCESS,
+                        text=_on if admin_only else _off, callback_data="settings play"
                     ),
                 ],
                 [
                     self.ikb(
                         text=lang["cmd_delete"] + " ➜",
                         callback_data="settings",
-                        style=ButtonStyle.SUCCESS,
                     ),
                     self.ikb(
                         text=_on if cmd_delete else _off,
                         callback_data="settings delete",
-                        style=ButtonStyle.SUCCESS,
-                    ),
-                ],
-                [
-                    self.ikb(
-                        text=lang["vclogger"] + " ➜",
-                        callback_data="settings",
-                        style=ButtonStyle.SUCCESS,
-                    ),
-                    self.ikb(
-                        text=_on if vclogger else _off,
-                        callback_data="settings vclog",
-                        style=ButtonStyle.SUCCESS,
-                    ),
-                ],
-                [
-                    self.ikb(
-                        text=lang["thumbnail"] + " ➜",
-                        callback_data="settings",
-                        style=ButtonStyle.SUCCESS,
-                    ),
-                    self.ikb(
-                        text=_on if thumbnail else _off,
-                        callback_data="settings thumb",
-                        style=ButtonStyle.SUCCESS,
                     ),
                 ],
                 [
                     self.ikb(
                         text=lang["autoplay"] + " ➜",
                         callback_data="settings",
-                        style=ButtonStyle.SUCCESS,
                     ),
                     self.ikb(
                         text=_on if autoplay else _off,
                         callback_data="settings autoplay",
-                        style=ButtonStyle.SUCCESS,
+                    ),
+                ],
+                [
+                    self.ikb(
+                        text=lang["vclogger"] + " ➜",
+                        callback_data="settings",
+                    ),
+                    self.ikb(
+                        text=_on if vclogger else _off, callback_data="settings vclog"
+                    ),
+                ],
+                [
+                    self.ikb(
+                        text=lang["thumbnail"] + " ➜",
+                        callback_data="settings",
+                    ),
+                    self.ikb(
+                        text=_on if thumbnail else _off, callback_data="settings thumb"
                     ),
                 ],
                 [
                     self.ikb(
                         text=lang["language"] + " ➜",
                         callback_data="settings",
-                        style=ButtonStyle.SUCCESS,
                     ),
-                    self.ikb(
-                        text=lang_codes[language],
-                        callback_data="language",
-                        style=ButtonStyle.SUCCESS,
-                    ),
-                ],
-                [
-                    self.ikb(
-                        text="close",
-                        callback_data="settings close",
-                        style=ButtonStyle.PRIMARY,
-                    ),
+                    self.ikb(text=lang_codes[language], callback_data="language"),
                 ],
             ]
         )
@@ -373,58 +295,33 @@ class Inline:
                 self.ikb(
                     text=lang["add_me"],
                     url=f"https://t.me/{app.username}?startgroup=true",
-                    style=ButtonStyle.SUCCESS,
                 )
             ],
+            [self.ikb(text=lang["help"], callback_data="help")],
             [
-                self.ikb(
-                    text=lang["support"],
-                    url=config.SUPPORT_CHAT,
-                    style=ButtonStyle.PRIMARY,
-                ),
-                self.ikb(
-                    text=lang["channel"],
-                    url=config.SUPPORT_CHANNEL,
-                    style=ButtonStyle.DANGER,
-                ),
-            ],
-            [
-                self.ikb(
-                    text=lang["help"],
-                    callback_data="help",
-                    style=ButtonStyle.PRIMARY,
-                ),
-                self.ikb(
-                    text="Tʜᴇ Sʜɪᴠ",
-                    user_id=config.OWNER_ID,
-                    style=ButtonStyle.DANGER,
-                ),
+                self.ikb(text=lang["support"], url=config.SUPPORT_CHAT),
+                self.ikb(text=lang["channel"], url=config.SUPPORT_CHANNEL),
             ],
         ]
-        if not private:
+        if private:
             rows += [
                 [
                     self.ikb(
-                        text=lang["language"],
-                        callback_data="language",
-                        style=ButtonStyle.PRIMARY,
+                        text="Owner",
+                        user_id=config.OWNER_ID,
                     )
                 ]
             ]
+        else:
+            rows += [[self.ikb(text=lang["language"], callback_data="language")]]
         return self.ikm(rows)
 
     def yt_key(self, link: str) -> types.InlineKeyboardMarkup:
         return self.ikm(
             [
                 [
-                    self.ikb(
-                        text="Copy", 
-                        copy_text=link,
-                    ),
-                    self.ikb(
-                        text="Youtube", 
-                        url=link,
-                    ),
+                    self.ikb(text="❐", copy_text=link),
+                    self.ikb(text="Youtube", url=link),
                 ],
             ]
         )
