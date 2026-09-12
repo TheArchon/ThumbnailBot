@@ -1,13 +1,3 @@
-#
-# Copyright (C) 2025-present by TheAloneTeam@Github, < https://github.com/TheAloneTeam >.
-#
-# This file is part of < https://github.com/TheAloneTeam/KartikMusic > project,
-# and is released under the "MIT License".
-# Please see < https://github.com/TheAloneTeam/KartikMusic/blob/master/LICENSE >
-#
-# All rights reserved.
-#
-
 from pathlib import Path
 
 from pyrogram import filters, types
@@ -25,7 +15,6 @@ def playlist_to_queue(chat_id: int, tracks: list) -> str:
     text = text[:1948] + "</blockquote>"
     return text
 
-
 @app.on_message(
     filters.command(["play", "playforce", "vplay", "vplayforce"])
     & filters.group
@@ -39,7 +28,7 @@ async def play_hndlr(
     force: bool = False,
     m3u8: bool = False,
     video: bool = False,
-    url: str | None = None,
+    url: str = None,
 ) -> None:
     sent = await m.reply_text(m.lang["play_searching"])
     file = None
@@ -48,7 +37,7 @@ async def play_hndlr(
     tracks = []
 
     if media:
-        sent.lang = m.lang
+        setattr(sent, "lang", m.lang)
         file = await tg.download(m.reply_to_message, sent)
 
     elif m3u8:
@@ -57,7 +46,9 @@ async def play_hndlr(
     elif url:
         if "playlist" in url:
             await sent.edit_text(m.lang["playlist_fetch"])
-            tracks = await yt.playlist(config.PLAYLIST_LIMIT, mention, url, video)
+            tracks = await yt.playlist(
+                config.PLAYLIST_LIMIT, mention, url, video
+            )
 
             if not tracks:
                 return await sent.edit_text(m.lang["playlist_error"])
@@ -90,26 +81,43 @@ async def play_hndlr(
         )
 
     if await db.is_logger():
-        await utils.play_log(m, sent.link, file.title, file.duration)
+        if media:
+            log_query = "Telegram media"
+            log_stream_type = "telegram"
+        elif m3u8:
+            log_query = url or "M3U8"
+            log_stream_type = "m3u8"
+        elif url:
+            log_query = url
+            log_stream_type = "youtube"
+        else:
+            log_query = " ".join(m.command[1:]).strip() if len(m.command) > 1 else file.title
+            log_stream_type = "youtube"
+
+        await utils.play_log(
+            m,
+            sent.link,
+            file.title,
+            file.duration,
+            query=log_query,
+            stream_type=log_stream_type,
+        )
 
     file.user = mention
     if force:
-        current = queue.get_current(m.chat.id)
-        if current and current.message_id:
-            try:
-                await app.delete_messages(m.chat.id, current.message_id)
-            except Exception:
-                pass
         queue.force_add(m.chat.id, file)
     else:
         position = queue.add(m.chat.id, file)
 
         if position != 0 or await db.get_call(m.chat.id):
+            queued_title = file.title or ""
+            if len(queued_title) > 40:
+                queued_title = queued_title[:40].rstrip() + "..."
             await sent.edit_text(
                 m.lang["play_queued"].format(
                     position,
                     file.url,
-                    file.title,
+                    queued_title,
                     file.duration,
                     m.from_user.mention,
                 ),
@@ -130,10 +138,17 @@ async def play_hndlr(
         if Path(fname).exists():
             file.file_path = fname
         else:
-            await sent.edit_text(m.lang["play_downloading"])
-            file.file_path = await yt.download(file.id, video=video)
+            # Stream directly from the download API's URL instead of
+            # waiting for the full file to save to disk first — ffmpeg
+            # plays straight off the URL, so this starts in ~1-2s. Falls
+            # back to a full download() only if the API didn't return
+            # valid media for this video (rare).
+            file.file_path = await yt.stream_url(file.id, video=video)
+            if not file.file_path:
+                await sent.edit_text(m.lang["play_downloading"])
+                file.file_path = await yt.download(file.id, video=video)
 
-    await Kartik.play_media(chat_id=m.chat.id, message=sent, media=file)
+    await ArchonMusic.play_media(chat_id=m.chat.id, message=sent, media=file)
     if not tracks:
         return
     added = playlist_to_queue(m.chat.id, tracks)
