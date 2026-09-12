@@ -19,21 +19,6 @@ async def _noop():
 
 
 class TgCall(PyTgCalls):
-
-    async def _safe_play(self, chat_id, stream, retries=2):
-        """Start a voice-chat stream with retries for transient FFmpeg timeouts."""
-        last_error = None
-        for attempt in range(retries + 1):
-            try:
-                return await self._safe_play(chat_id, stream)
-            except (TimeoutError, asyncio.TimeoutError) as exc:
-                last_error = exc
-                if attempt >= retries:
-                    raise
-                await asyncio.sleep(0.35 * (attempt + 1))
-        if last_error:
-            raise last_error
-
     def __init__(self):
         self.clients = []
         self.autoplay_history: dict[int, set] = {}
@@ -237,15 +222,7 @@ class TgCall(PyTgCalls):
             await self.stop(chat_id)
             await message.edit_text(_lang["error_no_call"])
         except exceptions.NoAudioSourceFound:
-            # Suppress the confusing "Audio Source Not Found" message.
-            try:
-                await app.delete_messages(
-                    chat_id=chat_id,
-                    message_ids=message.id,
-                    revoke=True,
-                )
-            except Exception:
-                pass
+            await message.edit_text(_lang["error_no_audio"])
             await self.stop(chat_id)
         except (ConnectionError, ConnectionNotFound, TelegramServerError):
             await self.stop(chat_id)
@@ -379,12 +356,12 @@ class TgCall(PyTgCalls):
             title_history = self.autoplay_title_history.setdefault(chat_id, set())
             history.add(str(video_id))
 
-            # Exclude IDs, while keeping raw titles so movie/album context
-            # can distinguish the same song name from different movies.
+            # Exclude both video IDs AND normalized song titles. YouTube often
+            # returns another upload/remix of the exact same song with a new ID.
             queued = queue.get_queue(chat_id)
             queued_ids = {str(item.id) for item in queued if getattr(item, "id", None)}
             queued_titles = {
-                str(getattr(item, "title", "") or "").strip()
+                re.sub(r"\W+", " ", str(getattr(item, "title", "") or "").lower()).strip()
                 for item in queued
                 if getattr(item, "title", None)
             }
