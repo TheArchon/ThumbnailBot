@@ -57,7 +57,12 @@ async def play_hndlr(
             tracks.remove(file)
             file.message_id = sent.id
         else:
+            # Direct YouTube links must be resolved as URLs, not sent to the
+            # text-search engine. This avoids "FAILED TO PROCESS THE QUERY"
+            # and lets watch/shorts/youtu.be links reach the downloader.
             file = await yt.search(url, sent.id, video=video)
+            if not file and hasattr(yt, "track_from_url"):
+                file = await yt.track_from_url(url, sent.id, video=video)
 
         if not file:
             return await sent.edit_text(
