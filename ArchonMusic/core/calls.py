@@ -237,7 +237,15 @@ class TgCall(PyTgCalls):
             await self.stop(chat_id)
             await message.edit_text(_lang["error_no_call"])
         except exceptions.NoAudioSourceFound:
-            await message.edit_text(_lang["error_no_audio"])
+            # Suppress the confusing "Audio Source Not Found" message.
+            try:
+                await app.delete_messages(
+                    chat_id=chat_id,
+                    message_ids=message.id,
+                    revoke=True,
+                )
+            except Exception:
+                pass
             await self.stop(chat_id)
         except (ConnectionError, ConnectionNotFound, TelegramServerError):
             await self.stop(chat_id)
@@ -371,12 +379,12 @@ class TgCall(PyTgCalls):
             title_history = self.autoplay_title_history.setdefault(chat_id, set())
             history.add(str(video_id))
 
-            # Exclude both video IDs AND normalized song titles. YouTube often
-            # returns another upload/remix of the exact same song with a new ID.
+            # Exclude IDs, while keeping raw titles so movie/album context
+            # can distinguish the same song name from different movies.
             queued = queue.get_queue(chat_id)
             queued_ids = {str(item.id) for item in queued if getattr(item, "id", None)}
             queued_titles = {
-                re.sub(r"\W+", " ", str(getattr(item, "title", "") or "").lower()).strip()
+                str(getattr(item, "title", "") or "").strip()
                 for item in queued
                 if getattr(item, "title", None)
             }
