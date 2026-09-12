@@ -40,11 +40,11 @@ class Config:
             url for url in getenv("COOKIES_URL", "").split(" ")
             if url and "batbin.me" in url
         ]
-        self.DEFAULT_THUMB = getenv("DEFAULT_THUMB", "https://graph.org/file/a0c719a648b318df230ab-b7a25ab69ad6cec4fc.jpg")
+        self.DEFAULT_THUMB = getenv("DEFAULT_THUMB", "https://files.catbox.moe/dno7wv.jpg")
         self.PING_IMG = getenv("PING_IMG", "https://files.catbox.moe/7hr8ah.jpg")
         self.START_VIDEO = getenv("START_VIDEO", "https://d.uguu.se/RHlOgTuP.mp4")
         self.BOT_NAME = "QUEEN MUSIC"
-        self.BOT_PHOTO_URL = "https://files.catbox.moe/wta4lx.jpg"
+        self.BOT_PHOTO_URL = "https://files.catbox.moe/dno7wv.jpg"
 
     def check(self):
         missing = [
