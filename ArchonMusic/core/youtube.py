@@ -10,9 +10,9 @@ from py_yt import VideosSearch, Playlist
 from ArchonMusic import logger, config
 from ArchonMusic.helpers import Track, utils
 
-API_URL = os.environ.get("SHRUTI_API_URL", "https://api.shrutibots.site")
+API_URL = os.environ.get("API_URL", "https://web.riteshyt.in").rstrip("/")
 
-API_KEY = os.environ.get("SHRUTI_API_KEY", "ShrutiBotsfhGT4c09sFRRuQIB6yCG") ## Get This API KEY FROM TELEGRAM BOT USERNAME: @SHRUTIAPIBOT
+API_KEY = os.environ.get("API_KEY", "")
 
 DOWNLOAD_DIR = "downloads"
 
@@ -29,98 +29,52 @@ def _youtube_video_id(value: str) -> str | None:
     return None
 
 
-async def download_song(link: str) -> str:
-    video_id = _youtube_video_id(link)
-    if not video_id or len(video_id) < 3:
+async def _download_api_file(video_id: str, video: bool = False) -> str | None:
+    video_id = _youtube_video_id(video_id) or str(video_id or "").strip()
+    if not video_id:
+        return None
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    ext = "mp4" if video else "mp3"
+    path = os.path.join(DOWNLOAD_DIR, f"{video_id}.{ext}")
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        return path
+
+    if not API_URL:
         return None
 
-    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp3")
-    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-        return file_path
+    if API_KEY:
+        stream_url = f"{API_URL}/downloads/{quote(API_KEY, safe='')}/youtube.com/{video_id}.{ext}"
+    else:
+        stream_url = f"{API_URL}/downloads/stream?query={quote('https://www.youtube.com/watch?v=' + video_id, safe='')}&dl_type={'video' if video else 'audio'}"
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{API_URL}/download",
-                params={"url": video_id, "type": "audio", "api_key": API_KEY},
-                timeout=aiohttp.ClientTimeout(total=300)
-            ) as resp:
-                if resp.status != 200:
+        timeout = aiohttp.ClientTimeout(total=600 if video else 300)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(stream_url) as resp:
+                if resp.status not in (200, 206):
+                    logger.warning(f"[YouTube] Download API HTTP {resp.status} for {video_id}")
                     return None
-                with open(file_path, "wb") as f:
+                with open(path, "wb") as f:
                     async for chunk in resp.content.iter_chunked(131072):
                         f.write(chunk)
-        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-            return file_path
-        return None
-    except Exception as api_error:
-        logger.warning(f"[YouTube] Audio API download failed: {api_error}; trying yt-dlp fallback.")
-        try:
-            opts = {
-                "quiet": True,
-                "no_warnings": True,
-                "noplaylist": True,
-                "format": "bestaudio/best",
-                "outtmpl": file_path,
-                "retries": 2,
-                "extractor_retries": 2,
-                "socket_timeout": 15,
-            }
-            cookie = YouTube().get_cookies()
-            if cookie:
-                opts["cookiefile"] = cookie
-            def extract():
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
-            await asyncio.wait_for(
-                asyncio.get_running_loop().run_in_executor(None, extract),
-                timeout=180,
-            )
-            if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-                return file_path
-        except Exception as fallback_error:
-            logger.error(f"[YouTube] Audio yt-dlp fallback failed: {fallback_error}")
-        if os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-            except Exception:
-                pass
-        return None
-
-
-async def download_video(link: str) -> str:
-    video_id = _youtube_video_id(link)
-    if not video_id or len(video_id) < 3:
-        return None
-
-    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp4")
-    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-        return file_path
-
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            return path
+    except Exception as e:
+        logger.warning(f"[YouTube] Download API failed for {video_id}: {e}")
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{API_URL}/download",
-                params={"url": video_id, "type": "video", "api_key": API_KEY},
-                timeout=aiohttp.ClientTimeout(total=600)
-            ) as resp:
-                if resp.status != 200:
-                    return None
-                with open(file_path, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(131072):
-                        f.write(chunk)
-        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-            return file_path
-        return None
+        if os.path.exists(path):
+            os.remove(path)
     except Exception:
-        if os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-            except Exception:
-                pass
-        return None
+        pass
+    return None
+
+
+async def download_song(link: str) -> str | None:
+    return await _download_api_file(link, video=False)
+
+
+async def download_video(link: str) -> str | None:
+    return await _download_api_file(link, video=True)
 
 
 class YouTube:
@@ -169,10 +123,57 @@ class YouTube:
         return not self.valid(url)
 
     async def search(self, query: str, m_id: int, video: bool = False) -> Track | None:
+        """Resolve a song/search query through the server-side API first.
+
+        Direct YouTube URLs are sent to the API as URLs, never to
+        VideosSearch. This avoids YouTube anti-bot checks on Heroku.
+        """
+        query = str(query or "").strip()
+        if not query:
+            return None
+
+        client = await self.get_client()
+        params = {"query": query, "limit": 1}
+        if API_KEY:
+            params["api_key"] = API_KEY
+
         try:
-            _search = VideosSearch(query, limit=1)
+            async with client.get(f"{API_URL}/search", params=params) as response:
+                if response.status == 200:
+                    result_data = await response.json()
+                    result = result_data.get("result") or []
+                    if result:
+                        data = result[0]
+                        track = Track(
+                            id=data.get("id"),
+                            channel_name=data.get("channel", {}).get("name"),
+                            duration=data.get("duration"),
+                            duration_sec=utils.to_seconds(data.get("duration")) if data.get("duration") else 0,
+                            message_id=m_id,
+                            title=(data.get("title") or "")[:80],
+                            thumbnail=(data.get("thumbnails", [{}])[-1].get("url") or "").split("?")[0],
+                            url=data.get("link") or query,
+                            view_count=data.get("viewCount", {}).get("short"),
+                            video=video,
+                        )
+                        if track.id:
+                            self.track_context[str(track.id)] = query
+                        return track
+                else:
+                    logger.warning(f"[YouTube] Search API HTTP {response.status} for query: {query[:80]}")
+        except Exception as e:
+            logger.warning(f"[YouTube] Search API failed: {e}")
+
+        # Only use py_yt for text searches. Never send a direct YouTube URL
+        # to VideosSearch because that can trigger the cloud-IP bot check.
+        if _youtube_video_id(query):
+            logger.warning("[YouTube] Direct URL API resolution failed; refusing py_yt URL search.")
+            return None
+
+        try:
+            _search = VideosSearch(query, limit=1, with_live=False)
             results = await _search.next()
-            if results and results["result"]:
+            if results and results.get("result"):
                 data = results["result"][0]
                 track = Track(
                     id=data.get("id"),
@@ -181,65 +182,53 @@ class YouTube:
                     duration_sec=utils.to_seconds(data.get("duration")) if data.get("duration") else 0,
                     message_id=m_id,
                     title=(data.get("title") or "")[:80],
-                    thumbnail=data.get("thumbnails", [{}])[-1].get("url").split("?")[0],
+                    thumbnail=(data.get("thumbnails", [{}])[-1].get("url") or "").split("?")[0],
                     url=data.get("link"),
                     view_count=data.get("viewCount", {}).get("short"),
                     video=video,
                 )
-                if track.id and query:
-                    self.track_context[str(track.id)] = str(query).strip()
+                if track.id:
+                    self.track_context[str(track.id)] = query
                 return track
         except Exception as e:
-            logger.error(f"Search error: {e}")
+            logger.warning(f"[YouTube] Search fallback failed: {e}")
         return None
 
     async def track_from_url(self, url: str, m_id: int, video: bool = False) -> Track | None:
-        """Resolve a direct YouTube URL into a Track without text search."""
-        video_id = _youtube_video_id(url)
-        if not video_id:
+        """Resolve a YouTube URL through the server-side API only."""
+        url = str(url or "").strip()
+        if not _youtube_video_id(url):
             return None
+        client = await self.get_client()
+        params = {"query": url, "limit": 1}
+        if API_KEY:
+            params["api_key"] = API_KEY
         try:
-            opts = {
-                "quiet": True,
-                "no_warnings": True,
-                "skip_download": True,
-                "noplaylist": True,
-                "socket_timeout": 10,
-            }
-            cookie = self.get_cookies()
-            if cookie:
-                opts["cookiefile"] = cookie
-            def extract():
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    return ydl.extract_info(
-                        f"https://www.youtube.com/watch?v={video_id}", download=False
-                    )
-            data = await asyncio.wait_for(
-                asyncio.get_running_loop().run_in_executor(None, extract),
-                timeout=15,
-            )
-            if not data:
-                return None
-            duration = int(data.get("duration") or 0)
-            if duration <= 0:
-                return None
-            thumbs = data.get("thumbnails") or []
-            thumbnail = thumbs[-1].get("url", "").split("?")[0] if thumbs else None
-            return Track(
-                id=video_id,
-                channel_name=data.get("channel") or data.get("uploader") or "YouTube",
-                duration=self._format_duration(duration),
-                duration_sec=duration,
-                message_id=m_id,
-                title=(data.get("title") or "Unknown")[:80],
-                thumbnail=thumbnail,
-                url=f"https://www.youtube.com/watch?v={video_id}",
-                view_count=self._format_views(data.get("view_count")),
-                video=video,
-            )
+            async with client.get(f"{API_URL}/search", params=params) as response:
+                if response.status != 200:
+                    return None
+                payload = await response.json()
+                result = payload.get("result") or []
+                if not result:
+                    return None
+                data = result[0]
+                track = Track(
+                    id=data.get("id") or _youtube_video_id(url),
+                    channel_name=data.get("channel", {}).get("name"),
+                    duration=data.get("duration"),
+                    duration_sec=utils.to_seconds(data.get("duration")) if data.get("duration") else 0,
+                    message_id=m_id,
+                    title=(data.get("title") or "")[:80],
+                    thumbnail=(data.get("thumbnails", [{}])[-1].get("url") or "").split("?")[0],
+                    url=data.get("link") or url,
+                    view_count=data.get("viewCount", {}).get("short"),
+                    video=video,
+                )
+                self.track_context[str(track.id)] = url
+                return track
         except Exception as e:
-            logger.warning(f"[YouTube] Direct URL metadata failed: {e}")
-            return None
+            logger.warning(f"[YouTube] Direct URL API resolution failed: {e}")
+        return None
 
     async def stream_url(self, video_id: str, video: bool = False) -> str | None:
         """Resolve a direct media URL for immediate playback.
@@ -251,7 +240,8 @@ class YouTube:
         if not video_id:
             return None
 
-        raw_id = str(video_id)
+        raw_id = str(video_id).strip()
+        normalized_id = _youtube_video_id(raw_id) or raw_id
         # The external download API already handles YouTube extraction on a
         # server-side IP. Returning its media endpoint first avoids the
         # YouTube anti-bot challenge seen on Heroku/cloud IPs and lets
@@ -259,7 +249,7 @@ class YouTube:
         api_stream = None
         if not video:
             api_stream = (
-                f"{API_URL}/download?url={quote(raw_id, safe='')}"
+                f"{API_URL}/download?url={quote(normalized_id, safe='')}"
                 f"&type=audio&api_key={quote(API_KEY, safe='')}"
             )
             try:
@@ -274,7 +264,7 @@ class YouTube:
             except Exception as e:
                 logger.warning(f"[YouTube] Audio API check failed: {e}")
 
-        url = raw_id if raw_id.startswith("http") else f"{self.base}{raw_id}"
+        url = raw_id if raw_id.startswith("http") else f"{self.base}{normalized_id}"
         cookie = self.get_cookies()
 
         clients = ["android", "web_safari", "web", "tv"]
