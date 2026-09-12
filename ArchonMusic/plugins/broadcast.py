@@ -91,7 +91,8 @@ async def _broadcast(_, message: types.Message):
     finally:
         broadcasting = False
 
-    # Final message is intentionally a single clean result message.
+    # Keep the STARTED BROADCASTING message visible.
+    # Send the final result as a new reply to the original /broadcast command.
     if target_type == "users":
         final_text = f"❖ ʙʀσᴧᴅᴄᴧsᴛєᴅ ϻєssᴧɢє ᴛσ {count} υsєʀs."
     else:
@@ -101,11 +102,10 @@ async def _broadcast(_, message: types.Message):
         )
 
     try:
-        await sent.edit_text(final_text)
+        await message.reply_text(final_text, quote=True)
     except Exception:
-        # If Telegram refuses the edit, still try to deliver the final result.
         try:
-            await message.reply_text(final_text)
+            await app.send_message(message.chat.id, final_text)
         except Exception:
             pass
 
