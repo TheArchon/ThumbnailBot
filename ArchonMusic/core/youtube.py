@@ -12,7 +12,7 @@ from ArchonMusic.helpers import Track, utils
 
 API_URL = os.environ.get("API_URL", "https://web.riteshyt.in").rstrip("/")
 
-API_KEY = os.environ.get("API_KEY", "")
+API_KEY = os.environ.get("API_KEY", "riteshfreea6901be19d3f420aad766250")
 
 DOWNLOAD_DIR = "downloads"
 
