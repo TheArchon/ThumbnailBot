@@ -560,7 +560,7 @@ class YouTube:
 
         for query in queries:
             try:
-                results = await VideosSearch(query, limit=20).next()
+                results = await VideosSearch(query, limit=20, language="en", region="IN").next()
             except Exception as e:
                 logger.warning(f"[Autoplay] Search failed for {query!r}: {e!r}")
                 continue
