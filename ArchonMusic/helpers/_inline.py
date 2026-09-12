@@ -45,10 +45,9 @@ class Inline:
                 ]
             )
         elif timer:
-            # Change the timer button colour whenever the timer advances.
-            # The timer is updated periodically by the player, so deriving the
-            # style from the displayed seconds gives a stable colour per tick
-            # without relying on random selection (which could repeat).
+            # Change timer button colour on every timer value update.
+            # The timer is normally MM:SS or HH:MM:SS, so use its seconds
+            # value to select a different Telegram button style each tick.
             timer_styles = [
                 ButtonStyle.PRIMARY,
                 ButtonStyle.SUCCESS,
@@ -56,9 +55,11 @@ class Inline:
                 ButtonStyle.DEFAULT,
             ]
             try:
-                parts = str(timer).split(":")
-                seconds = int(parts[-1]) + (int(parts[-2]) * 60 if len(parts) >= 2 else 0)
-                timer_style = timer_styles[seconds % len(timer_styles)]
+                parts = [int(x) for x in str(timer).split(":")]
+                total_seconds = 0
+                for value in parts:
+                    total_seconds = total_seconds * 60 + value
+                timer_style = timer_styles[total_seconds % len(timer_styles)]
             except (ValueError, TypeError):
                 timer_style = ButtonStyle.PRIMARY
 
