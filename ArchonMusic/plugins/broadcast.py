@@ -18,8 +18,6 @@ async def _broadcast(_, message: types.Message):
 
     command = message.command or []
     args = [str(x) for x in command[1:]]
-    # Only these are real broadcast control flags. Any other argument beginning
-    # with '-' is treated as broadcast text, so `/broadcast -user -hi` works.
     control_flags = {"-user", "-nochat", "-copy"}
     flags = {x.lower() for x in args if x.lower() in control_flags}
     msg = message.reply_to_message
@@ -28,7 +26,6 @@ async def _broadcast(_, message: types.Message):
     if not msg:
         text_parts = [x for x in args if x.lower() not in control_flags]
         if text_parts:
-            # Allow `/broadcast -user -hi` to broadcast `hi`, not `-hi`.
             cleaned = []
             for part in text_parts:
                 if part.startswith("-") and len(part) > 1:
@@ -38,78 +35,73 @@ async def _broadcast(_, message: types.Message):
         if not direct_text:
             return await message.reply_text("Usage:\n/broadcast Your message here")
 
-    # -user means users only. Otherwise broadcast to saved chats/groups.
-    if "-user" in flags:
-        targets = list(await db.get_users())
-        target_type = "users"
-    elif "-nochat" in flags:
-        targets = list(await db.get_users())
-        target_type = "users"
-    else:
-        targets = list(await db.get_chats())
-        target_type = "chats"
+    # `-user` broadcasts to BOTH saved chats and saved users.
+    # Without `-user`, it broadcasts to saved chats only.
+    chats = list(await db.get_chats())
+    users = list(await db.get_users()) if "-user" in flags else []
+
+    if not chats and not users:
+        return await message.reply_text("No chats or users found.")
 
     sent = await message.reply_text("❖ sᴛᴀʀᴛᴇᴅ ʙʀᴏᴀᴅᴄᴀsᴛɪɴɢ...")
     broadcasting = True
-    count = 0
+    chat_count = 0
+    user_count = 0
+
+    async def send_to(target_id):
+        if direct_text is not None:
+            await app.send_message(chat_id=target_id, text=direct_text)
+        elif "-copy" in flags:
+            await msg.copy(target_id, reply_markup=msg.reply_markup)
+        else:
+            await msg.forward(target_id)
 
     try:
-        for chat_id in targets:
+        # Send to chats first, then users.
+        for chat_id in chats + users:
             if not broadcasting:
-                try:
-                    await sent.edit_text(
-                        message.lang["gcast_stopped"].format(count, 0)
-                    )
-                except Exception:
-                    pass
-                return
+                break
 
+            is_user = chat_id in users and "-user" in flags
             try:
-                if direct_text is not None:
-                    await app.send_message(chat_id=chat_id, text=direct_text)
-                elif "-copy" in flags:
-                    await msg.copy(chat_id, reply_markup=msg.reply_markup)
+                await send_to(chat_id)
+                if is_user:
+                    user_count += 1
                 else:
-                    await msg.forward(chat_id)
-
-                count += 1
+                    chat_count += 1
                 await asyncio.sleep(0.1)
 
             except errors.FloodWait as fw:
                 await asyncio.sleep(fw.value + 1)
                 try:
-                    if direct_text is not None:
-                        await app.send_message(chat_id=chat_id, text=direct_text)
-                    elif "-copy" in flags:
-                        await msg.copy(chat_id, reply_markup=msg.reply_markup)
+                    await send_to(chat_id)
+                    if is_user:
+                        user_count += 1
                     else:
-                        await msg.forward(chat_id)
-                    count += 1
+                        chat_count += 1
                 except Exception:
                     pass
             except Exception:
-                # One blocked/deactivated/invalid target must not stop the
-                # complete broadcast and must not create/send errors.txt.
                 continue
-
     finally:
         broadcasting = False
 
-    # Keep the STARTED BROADCASTING message visible.
-    # Send the final result as a new reply to the original /broadcast command.
-    if target_type == "users":
-        final_text = f"❖ ʙʀσᴧᴅᴄᴧsᴛєᴅ ϻєssᴧɢє ᴛσ {count} υsєʀs."
-    else:
-        final_text = (
-            f"❖ ʙʀσᴧᴅᴄᴧsᴛєᴅ ϻєssᴧɢє ᴛσ {count} "
-            f"ᴄʜᴧᴛs ᴡɪᴛʜ 0 ᴘɪηs ғʀσϻ ᴛʜє ʙσᴛ."
-        )
+    chat_text = (
+        f"❖ ʙʀσᴧᴅᴄᴧsᴛєᴅ ϻєssᴧɢє ᴛσ {chat_count} "
+        f"ᴄʜᴧᴛs ᴡɪᴛʜ 0 ᴘɪηs ғʀσϻ ᴛʜє ʙσᴛ."
+    )
+    user_text = f"❖ ʙʀσᴧᴅᴄᴧsᴛєᴅ ϻєssᴧɢє ᴛσ {user_count} υsєʀs."
 
+    # Always keep STARTED visible. Final results are replies to the original command.
     try:
-        await message.reply_text(final_text, quote=True)
+        await message.reply_text(chat_text, quote=True)
+        if "-user" in flags:
+            await message.reply_text(user_text, quote=True)
     except Exception:
         try:
-            await app.send_message(message.chat.id, final_text)
+            await app.send_message(message.chat.id, chat_text)
+            if "-user" in flags:
+                await app.send_message(message.chat.id, user_text)
         except Exception:
             pass
 
