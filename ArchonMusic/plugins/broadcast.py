@@ -1,4 +1,3 @@
-import os
 import asyncio
 
 from pyrogram import errors, filters, types
@@ -42,7 +41,9 @@ async def _broadcast(_, message: types.Message):
     chats.extend(groups + users)
     broadcasting = True
 
-    failed = ""
+    # Keep broadcast failures silent; the completion message should stay
+    # clean and must not generate/send an errors.txt attachment.
+    failed = 0
 
     for chat in chats:
         if not broadcasting:
@@ -76,22 +77,20 @@ async def _broadcast(_, message: types.Message):
         except errors.FloodWait as fw:
             await asyncio.sleep(fw.value + 30)
 
-        except Exception as ex:
-            failed += f"{chat} - {ex}\n"
+        except Exception:
+            failed += 1
             continue
 
-    text = message.lang["gcast_end"].format(count, ucount)
-
-    if failed:
-        with open("errors.txt", "w") as f:
-            f.write(failed)
-
-        await message.reply_document(
-            document="errors.txt",
-            caption=text,
+    # Final result: one clean message only.  Do not send errors.txt.
+    total_chats = count + ucount
+    pins = 0
+    if ucount and not count:
+        text = f"❖ ʙʀσᴧᴅᴄᴧsᴛєᴅ ϻєssᴧɢє ᴛσ {ucount} υsєʀs."
+    else:
+        text = (
+            f"❖ ʙʀσᴧᴅᴄᴧsᴛєᴅ ϻєssᴧɢє ᴛσ {total_chats} "
+            f"ᴄʜᴧᴛs ᴡɪᴛʜ {pins} ᴘɪηs ғʀσϻ ᴛʜє ʙσᴛ."
         )
-
-        os.remove("errors.txt")
 
     broadcasting = False
     await sent.edit_text(text)
