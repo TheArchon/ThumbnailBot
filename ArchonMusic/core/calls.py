@@ -153,7 +153,7 @@ class TgCall(PyTgCalls):
     async def play_media(
         self,
         chat_id: int,
-        message: Message,
+        message: Message | None,
         media: Media | Track,
         seek_time: int = 0,
     ) -> None:
@@ -169,7 +169,8 @@ class TgCall(PyTgCalls):
         )
 
         if not media.file_path:
-            await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
+            if message:
+                await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
             return await self.stop(chat_id)
 
         # Auto-reconnect if the download API's connection drops mid-stream
@@ -216,20 +217,25 @@ class TgCall(PyTgCalls):
                 # playing, so /skip and automatic transition are immediate.
                 asyncio.create_task(self._prefetch_next(chat_id))
         except FileNotFoundError:
-            await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
+            if message:
+                await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
             await self.stop(chat_id)
         except exceptions.NoActiveGroupCall:
             await self.stop(chat_id)
-            await message.edit_text(_lang["error_no_call"])
+            if message:
+                await message.edit_text(_lang["error_no_call"])
         except exceptions.NoAudioSourceFound:
-            await message.edit_text(_lang["error_no_audio"])
+            if message:
+                await message.edit_text(_lang["error_no_audio"])
             await self.stop(chat_id)
         except (ConnectionError, ConnectionNotFound, TelegramServerError):
             await self.stop(chat_id)
-            await message.edit_text(_lang["error_tg_server"])
+            if message:
+                await message.edit_text(_lang["error_tg_server"])
         except RTMPStreamingUnsupported:
             await self.stop(chat_id)
-            await message.edit_text(_lang["error_rtmp"])
+            if message:
+                await message.edit_text(_lang["error_rtmp"])
 
 
     async def _resolve_now_playing_avatar(self, media: Media | Track) -> str | None:
@@ -244,7 +250,7 @@ class TgCall(PyTgCalls):
     async def _send_now_playing(
         self,
         chat_id: int,
-        message: Message,
+        message: Message | None,
         media: Media | Track,
         _lang: dict,
     ) -> None:
@@ -275,6 +281,23 @@ class TgCall(PyTgCalls):
                 media.user,
             )
             keyboard = buttons.controls(chat_id)
+            if message is None:
+                if _thumb:
+                    sent = await app.send_photo(
+                        chat_id=chat_id,
+                        photo=_thumb,
+                        caption=text,
+                        reply_markup=keyboard,
+                    )
+                else:
+                    sent = await app.send_message(
+                        chat_id=chat_id,
+                        text=text,
+                        reply_markup=keyboard,
+                    )
+                media.message_id = sent.id
+                return
+
             try:
                 if _thumb:
                     await message.edit_media(
@@ -285,10 +308,6 @@ class TgCall(PyTgCalls):
                         reply_markup=keyboard,
                     )
                 else:
-                    # Never convert an existing photo message into a text
-                    # message just because thumbnail generation failed.
-                    # That would make the album/player picture disappear.
-                    # Keep the current photo and only update its caption.
                     if message.photo:
                         try:
                             await message.edit_caption(
@@ -296,8 +315,6 @@ class TgCall(PyTgCalls):
                                 reply_markup=keyboard,
                             )
                         except Exception:
-                            # If caption editing is unavailable, leave the
-                            # existing photo message untouched.
                             pass
                     else:
                         await message.edit_text(text, reply_markup=keyboard)
@@ -468,16 +485,9 @@ class TgCall(PyTgCalls):
                 media.message_id = sent.id
                 return await self.stop(chat_id)
 
-        # Each track gets its OWN player message.
-        # Never reuse/edit the previous song's player message; this keeps
-        # every played track visible as a separate message in the chat.
-        player_message = await app.send_message(
-            chat_id=chat_id,
-            text="Loading...",
-        )
-
-        media.message_id = player_message.id
-        await self.play_media(chat_id, player_message, media)
+        # Start the next track without creating a temporary "Loading..."
+        # message. The final now-playing message is sent after playback starts.
+        await self.play_media(chat_id, None, media)
 
     async def _prefetch_next(self, chat_id: int) -> None:
         """Prepare the next manual/autoplay track while current audio plays."""
