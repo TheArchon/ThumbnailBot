@@ -348,6 +348,31 @@ class YouTube:
         with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(url, download=False)
 
+    @staticmethod
+    def _is_compilation_or_long_mix(title: str, duration_sec: int) -> bool:
+        """Reject long compilations/mixes from autoplay.
+
+        Autoplay should pick an individual song, not a 20-60 minute
+        compilation, jukebox, nonstop mix, or full album.
+        """
+        title_l = str(title or "").lower()
+        blocked = (
+            "nonstop", "non-stop", "jukebox", "full album", "album",
+            "compilation", "collection", "evergreen songs", "evergreen",
+            "best of", "greatest hits", "hits collection", "playlist",
+            "mix", "mashup", "medley", "dj set", "dj mix", "remix mix",
+            "songs", "song collection", "all songs", "top songs",
+            "30 songs", "50 songs", "100 songs", "1 hour", "2 hour",
+            "1 hr", "2 hr",
+        )
+        if any(word in title_l for word in blocked):
+            return True
+
+        # Individual autoplay songs are normally short. Keep a generous
+        # 10-minute ceiling so long genuine tracks can still play, while
+        # preventing large compilations from entering the autoplay queue.
+        return int(duration_sec or 0) > 10 * 60
+
     async def _related_from_mix(
         self, video_id: str, played: set[str], played_titles: set[str],
         language_hint: str | None = None,
@@ -378,7 +403,8 @@ class YouTube:
             if title.lower() in ("[deleted video]", "[private video]"):
                 continue
 
-            if any(self._same_song(title, old) for old in played_titles if old):
+            normalized_title = re.sub(r"\W+", " ", title.lower()).strip()
+            if normalized_title in played_titles:
                 continue
 
             # Keep the RD mix in the same regional language when possible.
@@ -392,6 +418,8 @@ class YouTube:
 
             duration = int(entry.get("duration") or 0)
             if duration <= 0 or duration > config.DURATION_LIMIT:
+                continue
+            if self._is_compilation_or_long_mix(title, duration):
                 continue
 
             thumbs = entry.get("thumbnails") or []
@@ -424,56 +452,24 @@ class YouTube:
         value = re.sub(r"\[[^\]]*\]|\([^)]*\)", " ", value)
         return re.sub(r"[^a-z0-9]+", " ", value).strip()
 
-    @staticmethod
-    def _title_context(value: str) -> str:
-        """Keep bracketed movie/album context for duplicate detection."""
-        value = str(value or "").lower()
-        parts = re.findall(r"\(([^)]*)\)|\[([^]]*)\]", value)
-        context = " ".join(a or b for a, b in parts)
-        context = re.sub(
-            r"\b(official\s*(music\s*)?video|official\s*audio|lyrics?|lyric\s*video|full\s*(song|video)|hd|4k|8k|audio|video|remaster(?:ed)?|reupload)\b",
-            " ",
-            context,
-        )
-        return re.sub(r"[^a-z0-9]+", " ", context).strip()
-
     @classmethod
     def _same_song(cls, a: str, b: str) -> bool:
-        """Detect the same song while allowing identical names from different movies."""
-        raw_a, raw_b = str(a or ""), str(b or "")
-        a = cls._norm_title(raw_a)
-        b = cls._norm_title(raw_b)
+        """Return True when two YouTube titles are probably the same song."""
+        a = cls._norm_title(a)
+        b = cls._norm_title(b)
         if not a or not b:
             return False
-
-        # If the base song name matches but both titles contain different
-        # movie/album context, they are different tracks and are allowed.
-        ctx_a = cls._title_context(raw_a)
-        ctx_b = cls._title_context(raw_b)
-        if a == b and ctx_a and ctx_b and ctx_a != ctx_b:
-            return False
-
         if a == b:
             return True
+        # Catch titles such as "Song | Artist" vs "Song - Official Audio".
         if len(a) >= 12 and len(b) >= 12 and (a in b or b in a):
-            # Different explicit movie/album context means don't collapse them.
-            if ctx_a and ctx_b and ctx_a != ctx_b:
-                return False
             return True
-
         at, bt = set(a.split()), set(b.split())
         if len(at) >= 3 and len(bt) >= 3:
             overlap = len(at & bt) / min(len(at), len(bt))
             if overlap >= 0.80:
-                if ctx_a and ctx_b and ctx_a != ctx_b:
-                    return False
                 return True
-        ratio = SequenceMatcher(None, a, b).ratio()
-        if ratio >= 0.84:
-            if ctx_a and ctx_b and ctx_a != ctx_b:
-                return False
-            return True
-        return False
+        return SequenceMatcher(None, a, b).ratio() >= 0.84
 
     @staticmethod
     def _detect_language_hint(context: str = "", title: str = "", channel: str = "") -> str | None:
@@ -578,18 +574,20 @@ class YouTube:
         current_id = str(current.id)
         played_ids = {str(x) for x in played}
         played_ids.add(current_id)
-        # Keep raw titles here: movie/album context in brackets matters.
-        blocked_titles = {str(x).strip() for x in (played_titles or set()) if str(x).strip()}
-        if title:
-            blocked_titles.add(title)
+        blocked_titles = {
+            self._norm_title(x) for x in (played_titles or set()) if x
+        }
+        current_norm = self._norm_title(title)
+        if current_norm:
+            blocked_titles.add(current_norm)
 
         candidates = []
         seen_ids = set(played_ids)
-        seen_titles = set()
+        seen_titles = set(blocked_titles)
 
         for query in queries:
             try:
-                results = await VideosSearch(query, limit=20, language="en", region="IN").next()
+                results = await VideosSearch(query, limit=20).next()
             except Exception as e:
                 logger.warning(f"[Autoplay] Search failed for {query!r}: {e!r}")
                 continue
@@ -600,26 +598,19 @@ class YouTube:
                     continue
 
                 result_title = (data.get("title") or "Unknown").strip()
-                result_channel = data.get("channel", {}).get("name") or data.get("uploader") or ""
                 norm = self._norm_title(result_title)
                 if not norm or self._same_song(result_title, title):
                     continue
 
-                # Never drift into a confidently detected different language.
-                if language_hint:
-                    detected_language = self._detect_language_hint(
-                        title=result_title, channel=result_channel
-                    )
-                    if detected_language and detected_language.lower() != language_hint.lower():
-                        continue
-
-                # Compare against every played title, preserving movie context.
+                # Compare against every played title, not just exact strings.
                 if any(self._same_song(result_title, old) for old in blocked_titles):
                     continue
 
                 duration_str = data.get("duration")
                 duration_sec = utils.to_seconds(duration_str) if duration_str else 0
                 if not duration_sec or duration_sec > config.DURATION_LIMIT:
+                    continue
+                if self._is_compilation_or_long_mix(result_title, duration_sec):
                     continue
 
                 seen_ids.add(eid)
@@ -629,7 +620,7 @@ class YouTube:
                 candidates.append(
                     Track(
                         id=eid,
-                        channel_name=result_channel or "YouTube",
+                        channel_name=data.get("channel", {}).get("name") or "YouTube",
                         duration=duration_str,
                         duration_sec=duration_sec,
                         title=result_title[:80],
@@ -701,7 +692,7 @@ class YouTube:
         related = await self._related_from_mix(
             current.id,
             played,
-            set(played_titles),
+            {self._norm_title(x) for x in played_titles if x},
             language_hint=language_hint,
         )
         if related and not self._same_song(related.title, current.title):
