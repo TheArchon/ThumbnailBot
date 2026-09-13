@@ -151,51 +151,24 @@ async def _ytdlp_download(video_id: str, video: bool = False) -> str | None:
     return None
 
 
-async def _first_download(video_id: str, video: bool = False) -> str | None:
-    """Race the two API download providers; fall back to yt-dlp only if both fail."""
-    tasks = [
-        asyncio.create_task(_shruti_download(video_id, video)),
-        asyncio.create_task(_ritesh_download(video_id, video)),
-    ]
-    try:
-        pending = set(tasks)
-        while pending:
-            done, pending = await asyncio.wait(
-                pending, return_when=asyncio.FIRST_COMPLETED
-            )
-            for task in done:
-                try:
-                    result = task.result()
-                except Exception as e:
-                    logger.warning(f"[Download] provider failed: {e!r}")
-                    result = None
-                if result:
-                    for other in pending:
-                        other.cancel()
-                    await asyncio.gather(*pending, return_exceptions=True)
-                    return result
-        return None
-    finally:
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-
 async def download_song(link: str) -> str | None:
     video_id = _youtube_video_id(link)
     if not video_id:
         return None
-    result = await _first_download(video_id, False)
-    return result or await _ytdlp_download(video_id, False)
+    # Priority: Shruti -> Ritesh -> yt-dlp
+    return (await _shruti_download(video_id, False)
+            or await _ritesh_download(video_id, False)
+            or await _ytdlp_download(video_id, False))
 
 
 async def download_video(link: str) -> str | None:
     video_id = _youtube_video_id(link)
     if not video_id:
         return None
-    result = await _first_download(video_id, True)
-    return result or await _ytdlp_download(video_id, True)
+    # Priority: Shruti -> Ritesh -> yt-dlp
+    return (await _shruti_download(video_id, True)
+            or await _ritesh_download(video_id, True)
+            or await _ytdlp_download(video_id, True))
 
 
 class YouTube:
@@ -302,113 +275,39 @@ class YouTube:
         return None
 
     async def stream_url(self, video_id: str, video: bool = False) -> str | None:
-        """
-        Get a playable media URL without using yt-dlp.
+        """Return a direct API media URL for immediate playback.
 
-        Priority:
-          1. Shruti stream API
-          2. Ritesh media API
-
-        A very small Range request is used only to validate that the API
-        actually returns media. The returned API URL is then passed to the
-        voice/video player.
+        Do not probe the provider with a Range request here. Shruti's current
+        public API exposes /download as the media endpoint; probing the old
+        /stream route can return HTTP 422 and unnecessarily force a full
+        download before playback. The player/ffmpeg can consume the returned
+        API URL directly.
         """
         vid = _youtube_video_id(video_id) or str(video_id or "").strip()
         if not vid:
             return None
 
-        async def check_shruti() -> str | None:
-            if not SHRUTI_API_KEY:
-                return None
-            try:
-                endpoint = f"{SHRUTI_API_URL}/stream/{vid}"
-                timeout = aiohttp.ClientTimeout(total=8, connect=3)
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.get(
-                        endpoint,
-                        params={"api_key": SHRUTI_API_KEY},
-                        headers={"Range": "bytes=0-1"},
-                        allow_redirects=True,
-                    ) as resp:
-                        ctype = (resp.headers.get("Content-Type") or "").lower()
-                        if resp.status in (200, 206) and not any(
-                            x in ctype for x in ("application/json", "text/html")
-                        ):
-                            logger.info(f"[Shruti] Stream ready: {vid}")
-                            return str(resp.url)
-                        logger.warning(
-                            f"[Shruti] Stream unavailable: HTTP {resp.status}"
-                        )
-            except Exception as e:
-                logger.warning(f"[Shruti] Stream failed for {vid}: {e}")
-            return None
+        # Ritesh is the preferred fast path when API_KEY is configured in
+        # Heroku. The URL itself is the media source; no pre-download.
+        if RITESH_API_KEY:
+            ext = "mp4" if video else "mp3"
+            return (
+                f"{RITESH_API_URL}/downloads/"
+                f"{RITESH_API_KEY}/youtube.com/{vid}.{ext}"
+            )
 
-        async def check_ritesh() -> str | None:
-            if not RITESH_API_KEY:
-                return None
+        # Shruti's current API returns the media body directly from /download.
+        # Keep this as the fallback when Ritesh is not configured.
+        if SHRUTI_API_KEY:
+            from urllib.parse import urlencode
+            params = urlencode({
+                "url": f"https://www.youtube.com/watch?v={vid}",
+                "type": "video" if video else "audio",
+                "api_key": SHRUTI_API_KEY,
+            })
+            return f"{SHRUTI_API_URL}/download?{params}"
 
-            # The Ritesh optimized route is primarily an audio route.
-            # Keep video on Shruti rather than returning an audio-only file.
-            if video:
-                return None
-
-            try:
-                endpoint = (
-                    f"{RITESH_API_URL}/downloads/"
-                    f"{RITESH_API_KEY}/youtube.com/{vid}.mp3"
-                )
-                timeout = aiohttp.ClientTimeout(total=8, connect=3)
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.get(
-                        endpoint,
-                        headers={"Range": "bytes=0-1"},
-                        allow_redirects=True,
-                    ) as resp:
-                        ctype = (resp.headers.get("Content-Type") or "").lower()
-                        if resp.status in (200, 206) and not any(
-                            x in ctype for x in ("application/json", "text/html")
-                        ):
-                            logger.info(f"[Ritesh] Stream ready: {vid}")
-                            return str(resp.url)
-                        logger.warning(
-                            f"[Ritesh] Stream unavailable: HTTP {resp.status}"
-                        )
-            except Exception as e:
-                logger.warning(f"[Ritesh] Stream failed for {vid}: {e}")
-            return None
-
-        # Race both APIs so a slow provider does not block a fast provider.
-        tasks = [
-            asyncio.create_task(check_shruti()),
-            asyncio.create_task(check_ritesh()),
-        ]
-
-        try:
-            pending = set(tasks)
-            while pending:
-                done, pending = await asyncio.wait(
-                    pending, return_when=asyncio.FIRST_COMPLETED
-                )
-
-                for task in done:
-                    try:
-                        result = task.result()
-                    except Exception as e:
-                        logger.warning(f"[Stream] Provider task failed: {e}")
-                        result = None
-
-                    if result:
-                        for other in pending:
-                            other.cancel()
-                        await asyncio.gather(*pending, return_exceptions=True)
-                        return result
-
-            return None
-        finally:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+        return None
 
     async def close(self):
         client = getattr(self, "_client", None)
@@ -437,7 +336,7 @@ class YouTube:
                         url=f"https://www.youtube.com/watch?v={vid}",
                         view_count="", video=video,
                     )
-                    self.track_context[str(vid)] = title
+                    # Direct URLs have no user search query; leave context unset.
                     return track
         except Exception as e:
             logger.warning(f"[YouTube] oEmbed failed for {vid}: {e}")
@@ -744,25 +643,6 @@ class YouTube:
             return True
         return int(duration_sec or 0) > 10 * 60
 
-    async def _api_search_candidates(self, query: str, limit: int = 20) -> list[dict]:
-        """Fast candidate search through the configured Ritesh API."""
-        if not query or not RITESH_API_KEY:
-            return []
-        try:
-            client = await self.get_client()
-            params = {"query": query, "limit": limit, "api_key": RITESH_API_KEY}
-            async with client.get(f"{RITESH_API_URL}/search", params=params) as resp:
-                if resp.status != 200:
-                    return []
-                payload = await resp.json(content_type=None)
-                items = payload.get("result") or payload.get("results") or payload.get("data") or []
-                if isinstance(items, dict):
-                    items = items.get("result") or items.get("results") or [items]
-                return items if isinstance(items, list) else []
-        except Exception as e:
-            logger.warning(f"[Ritesh] Autoplay search failed for {query!r}: {e!r}")
-            return []
-
     async def _related_from_search(
         self, current: Track, played: set[str], played_titles: set[str],
         context_query: str | None = None,
@@ -782,22 +662,18 @@ class YouTube:
         language_hint = self._detect_language_hint(context, title, channel)
         queries = []
 
-        if language_hint:
-            if context:
-                queries.append(f"{context} {language_hint} songs")
-            if title:
-                queries.append(f"{title} {language_hint} song")
-            if channel:
-                queries.append(f"{channel} {language_hint} songs")
-            queries.append(f"best {language_hint} songs")
-        else:
-            if context:
-                queries.append(f"{context} songs")
-            if channel:
-                queries.append(f"{channel} songs")
-                queries.append(f"{channel} best songs")
-            if title:
-                queries.append(f"{title} similar songs")
+        # Build narrowly related queries. Avoid broad "best songs" searches
+        # because they can jump to unrelated tracks or mixed/remix uploads.
+        if context and title:
+            queries.append(f"{context} {title}")
+        if title and channel:
+            queries.append(f"{title} {channel}")
+        if title:
+            queries.append(f"{title} similar song")
+        if channel:
+            queries.append(f"{channel} songs")
+        if language_hint and context:
+            queries.append(f"{context} {language_hint} song")
 
         # Always keep a useful title/channel fallback even if the language
         # detector did not recognize the query.
@@ -824,17 +700,13 @@ class YouTube:
         seen_titles = set(blocked_titles)
 
         for query in queries:
-            # Ritesh API is the fast path. py_yt is only a fallback for search.
-            result_items = await self._api_search_candidates(query, limit=20)
-            if not result_items:
-                try:
-                    results = await VideosSearch(query, limit=20).next()
-                    result_items = (results or {}).get("result", [])
-                except Exception as e:
-                    logger.warning(f"[Autoplay] Search failed for {query!r}: {e!r}")
-                    continue
+            try:
+                results = await VideosSearch(query, limit=20).next()
+            except Exception as e:
+                logger.warning(f"[Autoplay] Search failed for {query!r}: {e!r}")
+                continue
 
-            for data in result_items:
+            for data in (results or {}).get("result", []):
                 eid = str(data.get("id") or "")
                 if not eid or eid in seen_ids:
                     continue
@@ -846,6 +718,18 @@ class YouTube:
 
                 # Compare against every played title, not just exact strings.
                 if any(self._same_song(result_title, old) for old in blocked_titles):
+                    continue
+
+                # Never autoplay obvious mixed/remix/alternate versions.
+                result_lower = result_title.lower()
+                blocked_variants = (
+                    "remix", "mashup", "medley", "dj mix", "dj remix",
+                    "slowed", "slowed + reverb", "slowed reverb", "speed up",
+                    "sped up", "lofi", "lo-fi", "nightcore", "bass boosted",
+                    "8d audio", "8d song", "cover", "live", "karaoke",
+                    "reaction", "status video", "shorts", "short video",
+                )
+                if any(word in result_lower for word in blocked_variants):
                     continue
 
                 duration_str = data.get("duration")
@@ -887,7 +771,20 @@ class YouTube:
                 logger.warning(f"[Autoplay] No strict {language_hint} candidate found.")
                 return None
 
-        random.shuffle(candidates)
+        # Prefer the candidate most similar to the current song/artist,
+        # rather than randomly picking from a broad search result set.
+        def score(candidate):
+            title_score = SequenceMatcher(
+                None, self._norm_title(title), self._norm_title(candidate.title or "")
+            ).ratio()
+            channel_score = SequenceMatcher(
+                None, self._norm_title(channel), self._norm_title(candidate.channel_name or "")
+            ).ratio() if channel else 0.0
+            # Artist/channel similarity is useful, but do not let it overpower
+            # the song similarity.
+            return title_score * 0.65 + channel_score * 0.35
+
+        candidates.sort(key=score, reverse=True)
         return candidates[0]
 
     async def get_related(
@@ -941,3 +838,31 @@ class YouTube:
 
         logger.warning(f"[Autoplay] No unique related track found for {current.id}.")
         return None
+
+        played = {str(x) for x in (played or [])}
+        played.add(str(current.id))
+        played_titles = {
+            re.sub(r"\W+", " ", str(x).lower()).strip()
+            for x in (played_titles or set())
+            if x
+        }
+        current_title = re.sub(
+            r"\W+", " ", str(current.title or "").lower()
+        ).strip()
+        if current_title:
+            played_titles.add(current_title)
+
+        related = await self._related_from_mix(current.id, played, played_titles)
+        if related:
+            return related
+
+        logger.info(
+            f"[Autoplay] Mix returned nothing for {current.id}, trying search fallback."
+        )
+        related = await self._related_from_search(current, played, played_titles)
+        if related:
+            return related
+
+        logger.warning(f"[Autoplay] No related track found for {current.id}.")
+        return None
+        
