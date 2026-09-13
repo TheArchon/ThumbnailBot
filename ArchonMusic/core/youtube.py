@@ -12,7 +12,7 @@ from ArchonMusic.helpers import Track, utils
 
 # Primary media API
 SHRUTI_API_URL = os.environ.get("SHRUTI_API_URL", "https://shrutibots.site").rstrip("/")
-SHRUTI_API_KEY = os.environ.get("SHRUTI_API_KEY", "ShrutiBotsfhGT4c09sFRRuQIB6yCG")
+SHRUTI_API_KEY = os.environ.get("SHRUTI_API_KEY", "")
 
 # Secondary/fallback media API
 RITESH_API_URL = os.environ.get("API_URL", "https://web.riteshyt.in").rstrip("/")
@@ -282,34 +282,45 @@ class YouTube:
         return None
 
     async def stream_url(self, video_id: str, video: bool = False) -> str | None:
-        """Priority: Shruti stream -> Ritesh stream -> yt-dlp direct URL."""
+        """Fast direct streaming: race Shruti and Ritesh, use the first working API."""
         vid = _youtube_video_id(video_id) or str(video_id or "").strip()
         if not vid:
             return None
+
         client = await self.get_client()
 
-        # 1) Shruti stream
-        if SHRUTI_API_KEY:
+        async def shruti():
+            if not SHRUTI_API_KEY:
+                return None
             try:
                 url = f"{SHRUTI_API_URL}/stream/{vid}"
-                async with client.get(url, params={"api_key": SHRUTI_API_KEY}, headers={"Range": "bytes=0-1"}, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                timeout = aiohttp.ClientTimeout(total=6, connect=3)
+                async with client.get(
+                    url,
+                    params={"api_key": SHRUTI_API_KEY},
+                    headers={"Range": "bytes=0-1"},
+                    timeout=timeout,
+                ) as resp:
                     ctype = (resp.headers.get("Content-Type") or "").lower()
                     if resp.status in (200, 206) and "json" not in ctype and "text/html" not in ctype:
                         logger.info(f"[Shruti] Stream ready: {vid}")
                         return str(resp.url)
             except Exception as e:
                 logger.warning(f"[Shruti] Stream failed: {e}")
+            return None
 
-        # 2) Ritesh server-side media endpoint
-        if RITESH_API_KEY and not video:
+        async def ritesh():
+            if not RITESH_API_KEY or video:
+                return None
             try:
                 url = f"{RITESH_API_URL}/download"
+                timeout = aiohttp.ClientTimeout(total=6, connect=3)
                 async with client.get(
                     url,
                     params={"url": vid, "type": "audio", "api_key": RITESH_API_KEY},
                     headers={"Range": "bytes=0-1"},
                     allow_redirects=True,
-                    timeout=aiohttp.ClientTimeout(total=5),
+                    timeout=timeout,
                 ) as resp:
                     ctype = (resp.headers.get("Content-Type") or "").lower()
                     if resp.status in (200, 206) and "json" not in ctype and "text/html" not in ctype:
@@ -317,33 +328,27 @@ class YouTube:
                         return str(resp.url)
             except Exception as e:
                 logger.warning(f"[Ritesh] Stream failed: {e}")
+            return None
 
-        # 3) yt-dlp fallback
-        url = f"https://www.youtube.com/watch?v={vid}"
-        cookie = self.get_cookies()
-        clients = ["web", "android", "tv", "web_safari"]
-        for player in clients:
-            opts = {
-                "quiet": True, "no_warnings": True, "skip_download": True,
-                "noplaylist": True, "geo_bypass": True, "socket_timeout": 10,
-                "retries": 1, "extractor_retries": 1,
-                "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" if video else "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
-                "extractor_args": {"youtube": {"player_client": [player]}},
-            }
-            if cookie:
-                opts["cookiefile"] = cookie
-            def extract():
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                    return (info or {}).get("url")
-            try:
-                direct = await asyncio.wait_for(asyncio.get_running_loop().run_in_executor(None, extract), timeout=15)
-                if direct:
-                    logger.info(f"[yt-dlp] Direct stream ready via {player}: {vid}")
-                    return direct
-            except Exception as e:
-                logger.warning(f"[yt-dlp] stream client {player} failed for {vid}: {e}")
-        return None
+        # Both APIs are tried at the same time. The first valid stream wins.
+        tasks = [asyncio.create_task(shruti()), asyncio.create_task(ritesh())]
+        try:
+            pending = set(tasks)
+            while pending:
+                done, pending = await asyncio.wait(
+                    pending, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in done:
+                    result = task.result()
+                    if result:
+                        for other in pending:
+                            other.cancel()
+                        return result
+            return None
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
 
     async def close(self):
         client = getattr(self, "_client", None)
