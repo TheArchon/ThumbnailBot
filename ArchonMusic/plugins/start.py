@@ -12,8 +12,8 @@ import asyncio
 
 from pyrogram import enums, filters, types
 
-from KartikMusic import app, config, db, lang
-from KartikMusic.helpers import buttons, utils
+from ArchonMusic import app, config, db, lang
+from ArchonMusic.helpers import buttons, utils
 
 
 @app.on_message(filters.command(["help"]) & filters.private & ~app.bl_users)
