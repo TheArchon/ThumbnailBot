@@ -578,49 +578,62 @@ class YouTube:
 
     @staticmethod
     def _detect_language_hint(context: str = "", title: str = "", channel: str = "") -> str | None:
-        """Detect the requested music language/scene.
-
-        The original query has priority.  Candidate tracks are later checked
-        against this same language so autoplay does not silently switch from
-        Bhojpuri to Hindi, Hindi to Punjabi, etc.
-        """
+        """Detect the requested music language/scene from query, title and channel."""
         text = f"{context} {title} {channel}".lower()
 
         language_keywords = {
-            "bhojpuri": ["bhojpuri", "भोजपुरी", "bhojpuriya", "pawan singh", "khesari lal", "khesari lal yadav", "ritesh pandey", "shilpi raj", "pramod premi", "neelkamal singh", "arvind akela kallu", "ankush raja", "gunjan singh", "rajesh raja", "rakesh mishra"],
-            "punjabi": ["punjabi", "ਪੰਜਾਬੀ", "sidhu moose wala", "sidhu moosewala", "karan aujla", "diljit dosanjh", "amrit maan", "ap dhillon", "shubh", "gippy grewal", "jazzy b", "babbu maan"],
-            "haryanvi": ["haryanvi", "haryanavi", "हरियाणवी", "sapna choudhary", "gulzaar chhaniwala", "masoom sharma", "renuka panwar", "amit dhull"],
-            "rajasthani": ["rajasthani", "राजस्थानी", "marwadi", "मारवाड़ी", "rajasthani song", "rajasthani songs"],
-            "marathi": ["marathi", "मराठी", "marathi song", "marathi songs", "ajay atul", "swapnil bandodkar", "avdhoot gupte"],
-            "bengali": ["bengali", "বাংলা", "bangla", "bangla song", "bengali song", "bengali songs", "arijit singh bengali", "shreya ghoshal bengali"],
-            "tamil": ["tamil", "தமிழ்", "tamil song", "tamil songs", "anirudh", "ar rahman tamil", "vijay tamil", "ilaiyaraaja"],
-            "telugu": ["telugu", "తెలుగు", "telugu song", "telugu songs", "thaman s", "devi sri prasad", "sid sriram telugu"],
-            "kannada": ["kannada", "ಕನ್ನಡ", "kannada song", "kannada songs", "raghu dixit", "vijay prakash"],
-            "malayalam": ["malayalam", "മലയാളം", "malayalam song", "malayalam songs", "vineeth sreenivasan", "shaan rahman"],
-            "odia": ["odia", "oriya", "ଓଡ଼ିଆ", "odia song", "odia songs", "oriya song"],
-            "assamese": ["assamese", "অসমীয়া", "assamese song", "assamese songs", "zubeen garg", "papon assamese"],
-            "gujarati": ["gujarati", "ગુજરાતી", "gujarati song", "gujarati songs", "kinjal dave", "geeta rabari", "jignesh kaviraj", "devayat khavad"],
-            "hindi": ["hindi", "हिंदी", "hindi song", "hindi songs", "bollywood", "bollywood song", "bollywood songs"],
-            "urdu": ["urdu", "اردو", "urdu song", "urdu songs", "pakistani song", "pakistani songs", "qawwali"],
-            "nepali": ["nepali", "नेपाली", "nepali song", "nepali songs", "nepali music"],
+            "bhojpuri": ["bhojpuri", "भोजपुरी", "pawan singh", "khesari lal", "ritesh pandey",
+                         "shilpi raj", "pramod premi", "neelkamal singh", "arvind akela kallu",
+                         "ankush raja", "gunjan singh", "rakesh mishra"],
+            "punjabi": ["punjabi", "ਪੰਜਾਬੀ", "sidhu moose wala", "sidhu moosewala",
+                       "karan aujla", "diljit dosanjh", "amrit maan", "ap dhillon", "shubh",
+                       "gippy grewal", "jazzy b", "babbu maan", "prem dhillon"],
+            "haryanvi": ["haryanvi", "haryanavi", "हरियाणवी", "sapna choudhary",
+                         "gulzaar chhaniwala", "masoom sharma", "renuka panwar", "amit dhull",
+                         "ashu twinkle"],
+            "rajasthani": ["rajasthani", "राजस्थानी", "marwadi", "मारवाड़ी", "mame khan"],
+            "marathi": ["marathi", "मराठी", "ajay atul", "swapnil bandodkar", "avdhoot gupte",
+                        "sairat"],
+            "bengali": ["bengali", "বাংলা", "bangla", "anupam roy", "nachiketa"],
+            "tamil": ["tamil", "தமிழ்", "anirudh", "ar rahman tamil", "ilaiyaraaja",
+                      "yuvan shankar raja"],
+            "telugu": ["telugu", "తెలుగు", "thaman s", "devi sri prasad", "sid sriram telugu",
+                       "allu arjun", "prabhas telugu"],
+            "kannada": ["kannada", "ಕನ್ನಡ", "raghu dixit", "vijay prakash", "arjun janya"],
+            "malayalam": ["malayalam", "മലയാളം", "vineeth sreenivasan", "shaan rahman",
+                          "sushin shyam"],
+            "odia": ["odia", "oriya", "ଓଡ଼ିଆ", "humane sagar", "satyajeet jena"],
+            "assamese": ["assamese", "অসমীয়া", "zubeen garg", "papon assamese"],
+            "gujarati": ["gujarati", "ગુજરાતી", "kinjal dave", "geeta rabari",
+                        "jignesh kaviraj", "devayat khavad", "kajal maheriya"],
+            "hindi": ["hindi", "हिंदी", "hindi song", "hindi songs", "bollywood",
+                      "bollywood song", "bollywood songs", "desi hindi"],
+            "urdu": ["urdu", "اردو", "pakistani song", "pakistani songs", "qawwali",
+                     "ghazal", "atif aslam", "ali zafar"],
+            "nepali": ["nepali", "नेपाली", "nepali song", "nepali songs", "swoopna suman",
+                       "sajjan raj vaidya"],
             "sindhi": ["sindhi", "سنڌي", "सिंधी", "sindhi song", "sindhi songs"],
             "konkani": ["konkani", "कोंकणी", "konkani song", "konkani songs"],
             "kashmiri": ["kashmiri", "کٲشُر", "कश्मीरी", "kashmiri song", "kashmiri songs"],
             "manipuri": ["manipuri", "meitei", "মৈতৈ", "manipuri song", "manipuri songs"],
             "santali": ["santali", "ᱥᱟᱱᱛᱟᱲᱤ", "santali song", "santali songs"],
-            "english": ["english", "english song", "english songs", "american song", "british song", "pop song", "hollywood song"],
-            "spanish": ["spanish", "español", "spanish song", "spanish songs", "latin song", "reggaeton"],
+            "english": ["english", "english song", "english songs", "american song",
+                        "british song", "pop song", "hollywood song", "taylor swift",
+                        "the weeknd", "justin bieber", "ed sheeran", "billie eilish"],
+            "spanish": ["spanish", "español", "spanish song", "spanish songs", "latin song",
+                        "reggaeton", "bad bunny", "j balvin"],
             "portuguese": ["portuguese", "português", "brazilian song", "brazilian songs"],
             "french": ["french", "français", "french song", "french songs"],
             "german": ["german", "deutsch", "german song", "german songs"],
             "italian": ["italian", "italiano", "italian song", "italian songs"],
-            "korean": ["korean", "한국어", "k-pop", "kpop", "korean song", "korean songs"],
-            "japanese": ["japanese", "日本語", "j-pop", "jpop", "japanese song", "japanese songs"],
+            "korean": ["korean", "한국어", "k-pop", "kpop", "korean song", "korean songs",
+                       "bts", "blackpink", "twice", "stray kids"],
+            "japanese": ["japanese", "日本語", "j-pop", "jpop", "japanese song", "japanese songs",
+                         "yoasobi"],
             "arabic": ["arabic", "العربية", "arabic song", "arabic songs"],
             "turkish": ["turkish", "türkçe", "turkish song", "turkish songs"],
         }
 
-        # Strong, script-based signals where the writing system is unique.
         script_languages = [
             ("punjabi", r"[\u0A00-\u0A7F]"),
             ("bengali", r"[\u0980-\u09FF]"),
@@ -636,19 +649,16 @@ class YouTube:
             ("arabic", r"[\u0600-\u06FF]"),
         ]
 
-        # Explicit words/artist names beat generic script detection.
+        # Explicit query/artist markers have highest priority.
         for lang, words in language_keywords.items():
-            for word in words:
-                if word in text:
-                    return lang.title()
+            if any(word in text for word in words):
+                return lang.title()
 
         for lang, pattern in script_languages:
             if re.search(pattern, text):
                 return lang.title()
 
-        # Devanagari is shared by Hindi, Bhojpuri, Marathi, Haryanvi, Nepali,
-        # etc.; without a language marker it is intentionally treated as Hindi
-        # rather than guessing a regional language.
+        # Devanagari without a regional marker is treated as Hindi.
         if re.search(r"[\u0900-\u097F]", text):
             return "Hindi"
 
@@ -765,8 +775,18 @@ class YouTube:
                     continue
                 if self._is_compilation_or_long_mix(result_title, duration_sec):
                     continue
-                if language_hint and not self._language_matches(language_hint, result_title, data.get("channel", {}).get("name", "")):
-                    continue
+                candidate_channel = (
+                    data.get("channel", {}).get("name", "")
+                    if isinstance(data.get("channel"), dict)
+                    else str(data.get("channel") or "")
+                )
+                if language_hint:
+                    candidate_language = self._detect_language_hint(
+                        title=result_title,
+                        channel=candidate_channel,
+                    )
+                    if not candidate_language or candidate_language.casefold() != language_hint.casefold():
+                        continue
 
                 seen_ids.add(eid)
                 seen_titles.add(norm)
@@ -855,8 +875,6 @@ class YouTube:
 
         logger.warning(f"[Autoplay] No unique related track found for {current.id}.")
         return None
-
-        played = {str(x) for x in (played or [])}
         played.add(str(current.id))
         played_titles = {
             re.sub(r"\W+", " ", str(x).lower()).strip()
