@@ -15,8 +15,8 @@ import time
 import aiohttp
 from pyrogram import enums, errors, filters, types
 
-from KartikMusic import Kartik, app, db, lang, queue, tg, yt
-from KartikMusic.helpers import admin_check, buttons, can_manage_vc
+from ArchonMusic import ArchonMusic, app, db, lang, queue, tg, yt
+from ArchonMusic.helpers import admin_check, buttons, can_manage_vc
 
 
 @app.on_callback_query(filters.regex("cancel_dl") & ~app.bl_users)
