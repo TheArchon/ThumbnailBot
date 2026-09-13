@@ -121,4 +121,4 @@ class Config:
             raise SystemExit(
                 "Missing required environment variables: "
                 + ", ".join(missing)
-        )
+            )
