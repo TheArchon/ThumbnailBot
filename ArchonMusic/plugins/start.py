@@ -1,19 +1,11 @@
-#
-# Copyright (C) 2025-present by TheAloneTeam@Github, < https://github.com/TheAloneTeam >.
-#
-# This file is part of < https://github.com/TheAloneTeam/KartikMusic > project,
-# and is released under the "MIT License".
-# Please see < https://github.com/TheAloneTeam/KartikMusic/blob/master/LICENSE >
-#
-# All rights reserved.
-#
-
 import asyncio
-
 from pyrogram import enums, filters, types
 
 from ArchonMusic import app, config, db, lang
-from ArchonMusic.helpers import buttons, utils
+from ArchonMusic.helpers import admin_check, buttons, utils
+from pyrogram.enums import ButtonStyle
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
 
 
 @app.on_message(filters.command(["help"]) & filters.private & ~app.bl_users)
@@ -62,13 +54,13 @@ async def start(_, message: types.Message):
         await db.add_chat(message.chat.id)
 
 
-@app.on_message(
-    filters.command(["playmode", "settings"]) & filters.group & ~app.bl_users
-)
+@app.on_message(filters.command(["settings", "playmode"]) & filters.group & ~app.bl_users)
 @lang.language()
+@admin_check
 async def settings(_, message: types.Message):
     admin_only = await db.get_play_mode(message.chat.id)
     cmd_delete = await db.get_cmd_delete(message.chat.id)
+    vclogger = await db.get_vclogger(message.chat.id)
     thumbnail = await db.get_thumb_mode(message.chat.id)
     autoplay = await db.get_autoplay(message.chat.id)
     _language = await db.get_lang(message.chat.id)
@@ -78,14 +70,14 @@ async def settings(_, message: types.Message):
             message.lang,
             admin_only,
             cmd_delete,
-            autoplay,
+            vclogger,
             thumbnail,
+            autoplay,
             _language,
             message.chat.id,
         ),
         quote=True,
     )
-
 
 @app.on_message(filters.new_chat_members, group=7)
 @lang.language()
@@ -96,7 +88,67 @@ async def _new_member(_, message: types.Message):
     await asyncio.sleep(3)
     for member in message.new_chat_members:
         if member.id == app.id:
-            if await db.is_chat(message.chat.id):
-                return
+            #if await db.is_chat(message.chat.id):
+                #return
             await utils.send_log(message, True)
             await db.add_chat(message.chat.id)
+
+            adder = message.from_user.mention if message.from_user else "there"
+            _text = message.lang["chat_added"].format(
+                adder, app.name, message.lang["support"]
+            )
+            key = types.InlineKeyboardMarkup(
+                [
+                    [
+                        types.InlineKeyboardButton(
+                            text=message.lang["add_me"],
+                            url=f"https://t.me/{app.username}?startgroup=true",
+                            style=ButtonStyle.SUCCESS,
+                        ),
+                        types.InlineKeyboardButton(
+                            text=message.lang["support"],
+                            url=config.SUPPORT_CHAT,
+                            style=ButtonStyle.PRIMARY,
+                        ),
+                    ]
+                ]
+            )
+            try:
+                await app.send_video(
+                    chat_id=message.chat.id,
+                    video=config.START_VIDEO,
+                    caption=_text,
+                    reply_markup=key,
+                )
+            except Exception:
+                try:
+                    await app.send_message(
+                        chat_id=message.chat.id,
+                        text=_text,
+                        reply_markup=key,
+                    )
+                except Exception:
+                    pass
+
+
+@app.on_message(filters.left_chat_member, group=8)
+async def _left_member(_, message: types.Message):
+    if message.left_chat_member and message.left_chat_member.id == app.id:
+        await utils.send_left_log(message.chat.id, message.chat.title, message.from_user)
+        await db.rm_chat(message.chat.id)
+
+
+@app.on_chat_member_updated()
+async def _my_chat_member_updated(_, member: types.ChatMemberUpdated):
+    if not member.old_chat_member or not member.new_chat_member:
+        return
+    old_status = member.old_chat_member.status
+    new_status = member.new_chat_member.status
+
+    if (
+        old_status in [enums.ChatMemberStatus.MEMBER, enums.ChatMemberStatus.ADMINISTRATOR]
+        and new_status in [enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED]
+    ):
+        if member.new_chat_member.user and member.new_chat_member.user.id == app.id:
+            await utils.send_left_log(member.chat.id, member.chat.title, member.from_user)
+            await db.rm_chat(member.chat.id)
