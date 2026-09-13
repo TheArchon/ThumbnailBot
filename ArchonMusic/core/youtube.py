@@ -14,7 +14,7 @@ RITESH_API_URL = os.environ.get("API_URL", "https://web.riteshyt.in").rstrip("/"
 RITESH_API_KEY = os.environ.get("API_KEY", "")
 
 SHRUTI_API_URL = os.environ.get("SHRUTI_API_URL", "https://shrutibots.site").rstrip("/")
-SHRUTI_API_KEY = os.environ.get("SHRUTI_API_KEY", "ShrutiBotsfhGT4c09sFRRuQIB6yCG")
+SHRUTI_API_KEY = os.environ.get("SHRUTI_API_KEY", "")
 
 DOWNLOAD_DIR = "downloads"
 
@@ -332,8 +332,10 @@ class YouTube:
             if ready:
                 return ready
 
-        logger.warning(f"[YouTube] Both API stream providers failed for {vid}")
-        return None
+        # Last-resort local download. This keeps playback working when both
+        # external media APIs are unavailable or no API keys are configured.
+        logger.warning(f"[YouTube] API stream providers failed for {vid}; trying yt-dlp")
+        return await _ytdlp_download(vid, video=video)
 
     async def close(self):
         client = getattr(self, "_client", None)
