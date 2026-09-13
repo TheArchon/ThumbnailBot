@@ -1,9 +1,12 @@
 import asyncio
 from pyrogram import enums, filters, types
 
-from ArchonMusic import app, config, db, lang, logger
+from ArchonMusic import app, config, db, lang
 from ArchonMusic.helpers import admin_check, buttons, utils
 from pyrogram.enums import ButtonStyle
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+
 
 @app.on_message(filters.command(["help"]) & filters.private & ~app.bl_users)
 @lang.language()
@@ -18,58 +21,43 @@ async def _help(_, m: types.Message):
 @app.on_message(filters.command(["start"]))
 @lang.language()
 async def start(_, message: types.Message):
-    if message.from_user.id in app.bl_users and message.from_user.id not in db.notified:
-        return await message.reply_text(message.lang["bl_user_notify"])
-
-    if len(message.command) > 1 and message.command[1] == "help":
-        return await _help(_, message)
-
-    private = message.chat.type == enums.ChatType.PRIVATE
-    _text = (
-        message.lang["start_pm"].format(message.from_user.first_name, app.name)
-        if private
-        else message.lang["start_gp"].format(app.name)
-    )
-
-    # Build the keyboard safely. A malformed optional button must never stop /start.
     try:
-        key = buttons.start_key(message.lang, private)
-    except Exception as e:
-        logger.warning(f"[/start] keyboard build failed: {e!r}")
-        key = None
+        if message.from_user and message.from_user.id in app.bl_users and message.from_user.id not in db.notified:
+            return await message.reply_text(message.lang["bl_user_notify"])
 
-    # Send the welcome video when possible; always fall back to plain text.
-    try:
-        await message.reply_video(
-            video=config.START_VIDEO,
-            caption=_text,
-            reply_markup=key,
-            quote=not private,
+        if len(message.command) > 1 and message.command[1] == "help":
+            return await _help(_, message)
+
+        private = message.chat.type == enums.ChatType.PRIVATE
+        _text = (
+            message.lang["start_pm"].format(message.from_user.first_name, app.name)
+            if private
+            else message.lang["start_gp"].format(app.name)
         )
-    except Exception:
-        try:
-            await message.reply_text(
-                text=_text,
-                reply_markup=key,
-                quote=not private,
-            )
-        except Exception as e:
-            # Last-resort reply without the optional keyboard.
-            try:
-                await message.reply_text(text=_text, quote=not private)
-            except Exception:
-                return
+        key = buttons.start_key(message.lang, private)
 
-    if private:
-        # Log EVERY /start, but add the user to the database only once.
-        await utils.send_log(message)
-        if not await db.is_user(message.from_user.id):
-            await db.add_user(message.from_user.id)
-    else:
-        # Log EVERY group /start, but add the chat to the database only once.
-        await utils.send_log(message, True)
-        if not await db.is_chat(message.chat.id):
-            await db.add_chat(message.chat.id)
+        # Send text first. This makes /start reliable even when START_VIDEO
+        # points to an expired/unreachable media URL.
+        try:
+            await message.reply_text(text=_text, reply_markup=key, quote=not private)
+        except Exception as e:
+            logger.exception("/start reply failed: %s", e)
+            return
+
+        if private:
+            await utils.send_log(message)
+            if not await db.is_user(message.from_user.id):
+                await db.add_user(message.from_user.id)
+        else:
+            await utils.send_log(message, True)
+            if not await db.is_chat(message.chat.id):
+                await db.add_chat(message.chat.id)
+    except Exception as e:
+        logger.exception("/start handler failed: %s", e)
+        try:
+            await message.reply_text("Start menu failed. Please try /help.")
+        except Exception:
+            pass
 
 
 @app.on_message(filters.command(["settings", "playmode"]) & filters.group & ~app.bl_users)
@@ -119,15 +107,10 @@ async def _new_member(_, message: types.Message):
                 [
                     [
                         types.InlineKeyboardButton(
-                            text=message.lang["add_me"],
-                            url=f"https://t.me/{app.username}?startgroup=true",
-                            style=ButtonStyle.SUCCESS,
-                        ),
-                        types.InlineKeyboardButton(
                             text=message.lang["support"],
                             url=config.SUPPORT_CHAT,
                             style=ButtonStyle.PRIMARY,
-                        ),
+                        )
                     ]
                 ]
             )

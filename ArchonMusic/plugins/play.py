@@ -2,7 +2,7 @@ from pathlib import Path
 
 from pyrogram import filters, types
 
-from ArchonMusic import ArchonMusic, app, config, db, lang, queue, tg, yt
+from ArchonMusic import ArchonMusic, app, config, db, lang, logger, queue, tg, yt
 from ArchonMusic.helpers import buttons, utils
 from ArchonMusic.helpers._play import checkUB
 
@@ -57,7 +57,13 @@ async def play_hndlr(
             tracks.remove(file)
             file.message_id = sent.id
         else:
-            file = await yt.search(url, sent.id, video=video)
+            # A direct YouTube URL must be resolved from its video ID.
+            # Sending the whole URL to the search API is unreliable and can
+            # make /play <youtube-link> fail even though normal search works.
+            if yt.valid(url):
+                file = await yt.track_from_url(url, sent.id, video=video)
+            else:
+                file = await yt.search(url, sent.id, video=video)
 
         if not file:
             return await sent.edit_text(
@@ -145,9 +151,9 @@ async def play_hndlr(
             # valid media for this video (rare).
             file.file_path = await yt.stream_url(file.id, video=video)
             if not file.file_path:
-                # Keep the UI on the original search message; never leave a
-                # stale "Downloading..." message behind after playback starts.
-                file.file_path = await yt.download(file.id, video=video)
+                logger.error(f"[play] No direct stream URL available for {file.id}")
+                await sent.edit_text(m.lang["error_no_file"].format(config.SUPPORT_CHAT))
+                return
 
     await ArchonMusic.play_media(chat_id=m.chat.id, message=sent, media=file)
     if not tracks:
