@@ -35,12 +35,24 @@ async def start(_, message: types.Message):
     )
 
     key = buttons.start_key(message.lang, private)
-    await message.reply_video(
-        video=config.START_VIDEO,
-        caption=_text,
-        reply_markup=key,
-        quote=not private,
-    )
+
+    # Fallback: if START_VIDEO cannot be sent, send the start message as text.
+    try:
+        await message.reply_video(
+            video=config.START_VIDEO,
+            caption=_text,
+            reply_markup=key,
+            quote=not private,
+        )
+    except Exception:
+        try:
+            await message.reply_text(
+                text=_text,
+                reply_markup=key,
+                quote=not private,
+            )
+        except Exception:
+            return
 
     if private:
         # Log EVERY /start, but add the user to the database only once.
@@ -152,3 +164,4 @@ async def _my_chat_member_updated(_, member: types.ChatMemberUpdated):
         if member.new_chat_member.user and member.new_chat_member.user.id == app.id:
             await utils.send_left_log(member.chat.id, member.chat.title, member.from_user)
             await db.rm_chat(member.chat.id)
+    
