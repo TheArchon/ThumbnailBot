@@ -12,8 +12,8 @@ import asyncio
 
 from pyrogram import enums, errors, types
 
-from KartikMusic import app, config, db, logger, queue, yt
-from KartikMusic.helpers import utils
+from ArchonMusic import app, config, db, logger, queue, yt
+from ArchonMusic.helpers import utils
 
 
 def checkUB(play):
