@@ -1,12 +1,9 @@
 import asyncio
 from pyrogram import enums, filters, types
 
-from ArchonMusic import app, config, db, lang
+from ArchonMusic import app, config, db, lang, logger
 from ArchonMusic.helpers import admin_check, buttons, utils
 from pyrogram.enums import ButtonStyle
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-
-
 
 @app.on_message(filters.command(["help"]) & filters.private & ~app.bl_users)
 @lang.language()
@@ -34,9 +31,14 @@ async def start(_, message: types.Message):
         else message.lang["start_gp"].format(app.name)
     )
 
-    key = buttons.start_key(message.lang, private)
+    # Build the keyboard safely. A malformed optional button must never stop /start.
+    try:
+        key = buttons.start_key(message.lang, private)
+    except Exception as e:
+        logger.warning(f"[/start] keyboard build failed: {e!r}")
+        key = None
 
-    # Fallback: if START_VIDEO cannot be sent, send the start message as text.
+    # Send the welcome video when possible; always fall back to plain text.
     try:
         await message.reply_video(
             video=config.START_VIDEO,
@@ -51,8 +53,12 @@ async def start(_, message: types.Message):
                 reply_markup=key,
                 quote=not private,
             )
-        except Exception:
-            return
+        except Exception as e:
+            # Last-resort reply without the optional keyboard.
+            try:
+                await message.reply_text(text=_text, quote=not private)
+            except Exception:
+                return
 
     if private:
         # Log EVERY /start, but add the user to the database only once.
