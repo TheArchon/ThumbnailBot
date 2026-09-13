@@ -466,8 +466,16 @@ class TgCall(PyTgCalls):
         # the old "HOLD / DOWNLOADING NEXT MEDIA" message at every transition.
         prefetch_task = self._prefetch_tasks.get(chat_id)
         if prefetch_task and not prefetch_task.done():
+            # Never let a slow prefetch block /skip. Give it a short head-start;
+            # if it is still running, cancel it and resolve the stream directly.
             try:
-                await prefetch_task
+                await asyncio.wait_for(asyncio.shield(prefetch_task), timeout=0.75)
+            except asyncio.TimeoutError:
+                prefetch_task.cancel()
+                try:
+                    await prefetch_task
+                except (asyncio.CancelledError, Exception):
+                    pass
             except asyncio.CancelledError:
                 raise
             except Exception as e:

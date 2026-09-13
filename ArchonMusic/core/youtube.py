@@ -7,12 +7,14 @@ from difflib import SequenceMatcher
 from urllib.parse import quote
 import yt_dlp
 from py_yt import VideosSearch, Playlist
+from yukiytapi import YukiAPI
 from ArchonMusic import logger, config
 from ArchonMusic.helpers import Track, utils
 
-RITESH_API_URL = os.environ.get("API_URL", "https://web.riteshyt.in").rstrip("/")
-RITESH_API_KEY = os.environ.get("API_KEY", "riteshfreea6901be19d3f420aad766250")
+YUKI_API_URL = "https://music.yukiapi.site"
 
+# ShrutiBots: server-side YouTube downloader.
+# Set SHRUTI_API_KEY to the key issued by ShrutiBots.
 SHRUTI_API_URL = os.environ.get("SHRUTI_API_URL", "https://shrutibots.site").rstrip("/")
 SHRUTI_API_KEY = os.environ.get("SHRUTI_API_KEY", "")
 
@@ -31,65 +33,43 @@ def _youtube_video_id(value: str) -> str | None:
     return None
 
 
-async def _http_download(url: str, file_path: str, timeout: int) -> str | None:
-    try:
-        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout, connect=15)) as session:
-            async with session.get(url) as resp:
-                if resp.status not in (200, 206):
-                    logger.warning(f"[Download] HTTP {resp.status} from {url.split('?')[0]}")
-                    return None
-                ctype = (resp.headers.get("Content-Type") or "").lower()
-                if "application/json" in ctype or "text/html" in ctype:
-                    logger.warning(f"[Download] Non-media response from {url.split('?')[0]}")
-                    return None
-                with open(file_path, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(131072):
-                        f.write(chunk)
-        return file_path if os.path.exists(file_path) and os.path.getsize(file_path) > 0 else None
-    except Exception as e:
-        logger.warning(f"[Download] request failed: {e}")
-        try:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-        except Exception:
-            pass
+async def _download_api_file(video_id: str, video: bool = False) -> str | None:
+    """Download through ShrutiBots instead of yt-dlp on the Heroku worker."""
+    video_id = _youtube_video_id(video_id) or str(video_id or "").strip()
+    if not video_id:
         return None
-
-
-async def _shruti_download(video_id: str, video: bool = False) -> str | None:
     if not SHRUTI_API_KEY:
-        logger.warning("[Shruti] SHRUTI_API_KEY is not configured")
+        logger.error("[YouTube] SHRUTI_API_KEY is not configured.")
         return None
+
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     ext = "mp4" if video else "m4a"
     path = os.path.join(DOWNLOAD_DIR, f"{video_id}.{ext}")
     if os.path.exists(path) and os.path.getsize(path) > 0:
         return path
-    endpoint = f"{SHRUTI_API_URL}/download"
+
+    youtube_url = f"https://www.youtube.com/watch?v={video_id}"
     params = {
-        "url": f"https://www.youtube.com/watch?v={video_id}",
+        "url": youtube_url,
         "type": "video" if video else "audio",
         "api_key": SHRUTI_API_KEY,
     }
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600, connect=15)) as session:
-            async with session.get(endpoint, params=params) as resp:
-                if resp.status not in (200, 206):
-                    logger.warning(f"[Shruti] HTTP {resp.status}")
+        timeout = aiohttp.ClientTimeout(total=600 if video else 300)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(f"{SHRUTI_API_URL}/download", params=params) as resp:
+                content_type = (resp.headers.get("Content-Type") or "").lower()
+                if resp.status != 200 or "json" in content_type or "text/" in content_type:
+                    body = await resp.text()
+                    logger.warning(f"[YouTube] Shruti API HTTP {resp.status}: {body[:300]}")
                     return None
-                ctype = (resp.headers.get("Content-Type") or "").lower()
-                if "application/json" in ctype or "text/" in ctype:
-                    logger.warning("[Shruti] API returned an error response")
-                    return None
-                os.makedirs(DOWNLOAD_DIR, exist_ok=True)
                 with open(path, "wb") as f:
                     async for chunk in resp.content.iter_chunked(131072):
                         f.write(chunk)
         if os.path.exists(path) and os.path.getsize(path) > 0:
-            logger.info(f"[Shruti] Download successful: {video_id}")
             return path
     except Exception as e:
-        logger.warning(f"[Shruti] Download failed: {e}")
+        logger.warning(f"[YouTube] Shruti API download failed for {video_id}: {e}")
     try:
         if os.path.exists(path):
             os.remove(path)
@@ -98,77 +78,53 @@ async def _shruti_download(video_id: str, video: bool = False) -> str | None:
     return None
 
 
-async def _ritesh_download(video_id: str, video: bool = False) -> str | None:
-    if not RITESH_API_KEY:
-        return None
-    ext = "mp4" if video else "mp3"
-    path = os.path.join(DOWNLOAD_DIR, f"{video_id}.{ext}")
-    if os.path.exists(path) and os.path.getsize(path) > 0:
-        return path
-    # Ritesh optimized media route.
-    url = f"{RITESH_API_URL}/downloads/{RITESH_API_KEY}/youtube.com/{video_id}.{ext}"
-    result = await _http_download(url, path, 600)
-    if result:
-        logger.info(f"[Ritesh] Download successful: {video_id}")
-    return result
-
-
-async def _ytdlp_download(video_id: str, video: bool = False) -> str | None:
-    url = f"https://www.youtube.com/watch?v={video_id}"
-    ext = "mp4" if video else "mp3"
-    out = os.path.join(DOWNLOAD_DIR, f"{video_id}.{ext}")
-    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    opts = {
-        "quiet": True, "no_warnings": True, "noplaylist": True,
-        "outtmpl": out, "retries": 2, "socket_timeout": 20,
-        "geo_bypass": True,
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" if video else "bestaudio/best",
-        "merge_output_format": "mp4" if video else None,
-        "postprocessors": [] if video else [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}],
-    }
-    opts = {k: v for k, v in opts.items() if v is not None}
-    try:
-        cookie = None
-        cookie_dir = "AloneX/cookies"
-        if os.path.exists(cookie_dir):
-            files = [f for f in os.listdir(cookie_dir) if f.endswith(".txt")]
-            if files:
-                cookie = os.path.join(cookie_dir, random.choice(files))
-        if cookie:
-            opts["cookiefile"] = cookie
-        def extract():
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([url])
-        await asyncio.get_running_loop().run_in_executor(None, extract)
-        if os.path.exists(out) and os.path.getsize(out) > 0:
-            return out
-        if not video:
-            mp3 = os.path.splitext(out)[0] + ".mp3"
-            if os.path.exists(mp3) and os.path.getsize(mp3) > 0:
-                return mp3
-    except Exception as e:
-        logger.warning(f"[yt-dlp] Download failed: {e}")
-    return None
-
-
 async def download_song(link: str) -> str | None:
-    video_id = _youtube_video_id(link)
-    if not video_id:
-        return None
-    # Priority: Shruti -> Ritesh -> yt-dlp
-    return (await _shruti_download(video_id, False)
-            or await _ritesh_download(video_id, False)
-            or await _ytdlp_download(video_id, False))
+    return await _download_api_file(link, video=False)
 
 
 async def download_video(link: str) -> str | None:
-    video_id = _youtube_video_id(link)
-    if not video_id:
+    return await _download_api_file(link, video=True)
+
+
+async def _yuki_search(query: str, limit: int = 1):
+    try:
+        async with YukiAPI() as yuki:
+            return await yuki.search(query, limit=limit)
+    except Exception as e:
+        logger.warning(f"[YouTube] Yuki search failed: {e}")
+        return []
+
+
+async def _yuki_details(query: str):
+    try:
+        async with YukiAPI() as yuki:
+            return await yuki.details(query)
+    except Exception as e:
+        logger.warning(f"[YouTube] Yuki details failed: {e}")
         return None
-    # Priority: Shruti -> Ritesh -> yt-dlp
-    return (await _shruti_download(video_id, True)
-            or await _ritesh_download(video_id, True)
-            or await _ytdlp_download(video_id, True))
+
+
+async def _yuki_stream(query: str, video: bool = False):
+    try:
+        async with YukiAPI() as yuki:
+            return await yuki.get_stream(query, type="video" if video else "audio")
+    except Exception as e:
+        logger.warning(f"[YouTube] Yuki stream failed: {e}")
+        return None
+
+
+async def _yuki_download(query: str, video: bool = False):
+    try:
+        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+        async with YukiAPI() as yuki:
+            return await yuki.download(
+                query,
+                type="video" if video else "audio",
+                output_dir=DOWNLOAD_DIR,
+            )
+    except Exception as e:
+        logger.warning(f"[YouTube] Yuki download failed: {e}")
+        return None
 
 
 class YouTube:
@@ -186,10 +142,11 @@ class YouTube:
         self.cookie_dir = "AloneX/cookies"
 
     async def get_client(self):
+        """Return a reusable aiohttp session for the API requests."""
         client = getattr(self, "_client", None)
         if client is None or client.closed:
             self._client = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=600, connect=15)
+                timeout=aiohttp.ClientTimeout(total=600, connect=10)
             )
         return self._client
 
@@ -203,7 +160,8 @@ class YouTube:
 
     async def save_cookies(self, urls: list[str]) -> None:
         logger.info("Saving cookies from urls...")
-        os.makedirs(self.cookie_dir, exist_ok=True)
+        if not os.path.exists(self.cookie_dir):
+            os.makedirs(self.cookie_dir)
         async with aiohttp.ClientSession() as session:
             for i, url in enumerate(urls):
                 path = f"{self.cookie_dir}/cookie_{i}.txt"
@@ -215,156 +173,238 @@ class YouTube:
         logger.info(f"Cookies saved in {self.cookie_dir}.")
 
     def valid(self, url: str) -> bool:
-        return bool(url and re.match(self.regex, str(url)))
+        if not url:
+            return False
+        return bool(re.match(self.regex, url))
 
     def invalid(self, url: str) -> bool:
-        return not self.valid(url)
+        """Return True only for malformed YouTube URLs."""
+        if not url:
+            return False
+        return bool(re.match(
+            r"https?://(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)/",
+            str(url),
+        )) and not self.valid(url)
 
     async def search(self, query: str, m_id: int, video: bool = False) -> Track | None:
-        # Search priority: Ritesh API -> py_yt/yt-dlp fallback. Shruti currently
-        # exposes download/stream endpoints, not a public search endpoint.
+        """Resolve a song/search query through Yuki API first."""
+        query = str(query or "").strip()
         if not query:
             return None
-        try:
-            client = await self.get_client()
-            params = {"query": query, "limit": 1}
-            if RITESH_API_KEY:
-                params["api_key"] = RITESH_API_KEY
-            async with client.get(f"{RITESH_API_URL}/search", params=params) as resp:
-                if resp.status == 200:
-                    payload = await resp.json(content_type=None)
-                    items = payload.get("result") or payload.get("results") or payload.get("data") or []
-                    if isinstance(items, dict):
-                        items = items.get("result") or items.get("results") or [items]
-                    if items:
-                        data = items[0]
-                        track = Track(
-                            id=data.get("id"),
-                            channel_name=(data.get("channel") or {}).get("name") if isinstance(data.get("channel"), dict) else data.get("channel"),
-                            duration=data.get("duration"),
-                            duration_sec=utils.to_seconds(data.get("duration")) if data.get("duration") else 0,
-                            message_id=m_id, title=(data.get("title") or "")[:80],
-                            thumbnail=((data.get("thumbnails") or [{}])[-1].get("url") or "").split("?")[0],
-                            url=data.get("link") or data.get("url"),
-                            view_count=(data.get("viewCount") or {}).get("short") if isinstance(data.get("viewCount"), dict) else data.get("viewCount"),
-                            video=video,
-                        )
-                        if track.id:
-                            self.track_context[str(track.id)] = str(query).strip()
-                            return track
-        except Exception as e:
-            logger.warning(f"[Ritesh] Search failed: {e}")
 
         try:
-            results = await VideosSearch(query, limit=1).next()
-            if results and results.get("result"):
-                data = results["result"][0]
+            results = await _yuki_search(query, limit=1)
+            if results:
+                data = results[0]
                 track = Track(
-                    id=data.get("id"), channel_name=(data.get("channel") or {}).get("name"),
-                    duration=data.get("duration"), duration_sec=utils.to_seconds(data.get("duration")) if data.get("duration") else 0,
-                    message_id=m_id, title=(data.get("title") or "")[:80],
-                    thumbnail=((data.get("thumbnails") or [{}])[-1].get("url") or "").split("?")[0],
-                    url=data.get("link"), view_count=(data.get("viewCount") or {}).get("short") if isinstance(data.get("viewCount"), dict) else data.get("viewCount"),
+                    id=getattr(data, "vidid", None) or getattr(data, "id", None),
+                    channel_name=getattr(data, "channel", ""),
+                    duration=getattr(data, "duration", ""),
+                    duration_sec=int(getattr(data, "duration_sec", 0) or 0),
+                    message_id=m_id,
+                    title=(getattr(data, "title", "") or "")[:80],
+                    thumbnail=(getattr(data, "thumbnail", "") or "").split("?")[0],
+                    url=getattr(data, "link", None) or query,
+                    view_count=getattr(data, "views", ""),
                     video=video,
                 )
                 if track.id:
-                    self.track_context[str(track.id)] = str(query).strip()
+                    self.track_context[str(track.id)] = query
+                    return track
+        except Exception as e:
+            logger.warning(f"[YouTube] Yuki search mapping failed: {e}")
+
+        # Keep the existing py_yt fallback for text searches only.
+        if _youtube_video_id(query):
+            return await self.track_from_url(query, m_id, video=video)
+
+        try:
+            _search = VideosSearch(query, limit=1, with_live=False)
+            results = await _search.next()
+            if results and results.get("result"):
+                data = results["result"][0]
+                track = Track(
+                    id=data.get("id"),
+                    channel_name=data.get("channel", {}).get("name"),
+                    duration=data.get("duration"),
+                    duration_sec=utils.to_seconds(data.get("duration")) if data.get("duration") else 0,
+                    message_id=m_id,
+                    title=(data.get("title") or "")[:80],
+                    thumbnail=(data.get("thumbnails", [{}])[-1].get("url") or "").split("?")[0],
+                    url=data.get("link"),
+                    view_count=data.get("viewCount", {}).get("short"),
+                    video=video,
+                )
+                if track.id:
+                    self.track_context[str(track.id)] = query
+                    return track
+        except Exception as e:
+            logger.warning(f"[YouTube] Search fallback failed: {e}")
+        return None
+
+    async def track_from_url(self, url: str, m_id: int, video: bool = False) -> Track | None:
+        """Resolve a YouTube URL through Yuki API first, then oEmbed."""
+        url = str(url or "").strip()
+        if not _youtube_video_id(url):
+            return None
+
+        try:
+            data = await _yuki_details(url)
+            if data:
+                vid = getattr(data, "vidid", None) or getattr(data, "id", None) or _youtube_video_id(url)
+                track = Track(
+                    id=vid,
+                    channel_name=getattr(data, "channel", ""),
+                    duration=getattr(data, "duration", ""),
+                    duration_sec=int(getattr(data, "duration_sec", 0) or 0),
+                    message_id=m_id,
+                    title=(getattr(data, "title", "") or "YouTube")[:80],
+                    thumbnail=(getattr(data, "thumbnail", "") or "").split("?")[0],
+                    url=getattr(data, "link", None) or url,
+                    view_count=getattr(data, "views", ""),
+                    video=video,
+                )
+                self.track_context[str(track.id)] = url
                 return track
         except Exception as e:
-            logger.error(f"[yt_yt] Search fallback failed: {e}")
+            logger.warning(f"[YouTube] Yuki URL resolution failed: {e}")
+
+        try:
+            clean_url = url.split("&")[0]
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+                async with session.get(
+                    "https://www.youtube.com/oembed",
+                    params={"url": clean_url, "format": "json"},
+                ) as response:
+                    if response.status == 200:
+                        meta = await response.json()
+                        vid = _youtube_video_id(url)
+                        track = Track(
+                            id=vid,
+                            channel_name=meta.get("author_name"),
+                            duration="00:00",
+                            duration_sec=0,
+                            message_id=m_id,
+                            title=(meta.get("title") or "YouTube")[:80],
+                            thumbnail=meta.get("thumbnail_url"),
+                            url=clean_url,
+                            view_count="",
+                            video=video,
+                        )
+                        self.track_context[str(vid)] = url
+                        return track
+        except Exception as e:
+            logger.warning(f"[YouTube] oEmbed metadata fallback failed: {e}")
         return None
 
     async def stream_url(self, video_id: str, video: bool = False) -> str | None:
-        """Priority: Shruti stream -> Ritesh stream -> yt-dlp direct URL."""
-        vid = _youtube_video_id(video_id) or str(video_id or "").strip()
-        if not vid:
+        """Resolve a direct media URL for immediate playback.
+
+        Try a few YouTube player clients because one client can fail while
+        another still exposes a playable direct URL. No full download is
+        performed here; ffmpeg/pytgcalls streams the returned URL directly.
+        """
+        if not video_id:
             return None
-        client = await self.get_client()
 
-        # 1) Shruti stream
+        raw_id = str(video_id).strip()
+        normalized_id = _youtube_video_id(raw_id) or raw_id
+        # Yuki provides direct tokenized streams without using yt-dlp on Heroku.
+        yuki_stream = await _yuki_stream(normalized_id, video=video)
+        if yuki_stream:
+            return yuki_stream
+
+        # The external download API already handles YouTube extraction on a
+        # server-side IP. Returning its media endpoint first avoids the
+        # YouTube anti-bot challenge seen on Heroku/cloud IPs and lets
+        # ffmpeg/pytgcalls start playback without downloading the whole file.
+        # ShrutiBots returns the media response directly. Its /stream endpoint
+        # can be consumed by ffmpeg/pytgcalls without running yt-dlp on Heroku.
         if SHRUTI_API_KEY:
+            api_stream = (
+                f"{SHRUTI_API_URL}/stream/{normalized_id}"
+                f"?api_key={quote(SHRUTI_API_KEY, safe='')}"
+            )
             try:
-                url = f"{SHRUTI_API_URL}/stream/{vid}"
-                async with client.get(url, params={"api_key": SHRUTI_API_KEY}, headers={"Range": "bytes=0-1"}) as resp:
-                    ctype = (resp.headers.get("Content-Type") or "").lower()
-                    if resp.status in (200, 206) and "json" not in ctype and "text/html" not in ctype:
-                        logger.info(f"[Shruti] Stream ready: {vid}")
-                        return str(resp.url)
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        api_stream, headers={"Range": "bytes=0-1"},
+                        timeout=aiohttp.ClientTimeout(total=10)
+                    ) as resp:
+                        content_type = (resp.headers.get("Content-Type") or "").lower()
+                        if resp.status in (200, 206) and "json" not in content_type:
+                            return api_stream
+                        body = await resp.text()
+                        logger.warning(f"[YouTube] Shruti stream HTTP {resp.status}: {body[:200]}")
             except Exception as e:
-                logger.warning(f"[Shruti] Stream failed: {e}")
+                logger.warning(f"[YouTube] Shruti stream check failed: {e}")
 
-        # 2) Ritesh optimized stream
-        if RITESH_API_KEY:
-            ext = "mp4" if video else "mp3"
-            url = f"{RITESH_API_URL}/downloads/{RITESH_API_KEY}/youtube.com/{vid}.{ext}"
-            try:
-                async with client.get(url, headers={"Range": "bytes=0-1"}) as resp:
-                    if resp.status in (200, 206):
-                        ctype = (resp.headers.get("Content-Type") or "").lower()
-                        if "json" not in ctype and "text/html" not in ctype:
-                            logger.info(f"[Ritesh] Stream ready: {vid}")
-                            return url
-            except Exception as e:
-                logger.warning(f"[Ritesh] Stream failed: {e}")
-
-        # 3) yt-dlp fallback
-        url = f"https://www.youtube.com/watch?v={vid}"
+        url = raw_id if raw_id.startswith("http") else f"{self.base}{normalized_id}"
         cookie = self.get_cookies()
-        clients = ["web", "android", "tv", "web_safari"]
-        for player in clients:
+
+        clients = ["android", "web_safari", "web", "tv"]
+        for client in clients:
             opts = {
-                "quiet": True, "no_warnings": True, "skip_download": True,
-                "noplaylist": True, "geo_bypass": True, "socket_timeout": 10,
-                "retries": 1, "extractor_retries": 1,
-                "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" if video else "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
-                "extractor_args": {"youtube": {"player_client": [player]}},
+                "quiet": True,
+                "no_warnings": True,
+                "skip_download": True,
+                "noplaylist": True,
+                "geo_bypass": True,
+                "socket_timeout": 8,
+                "retries": 1,
+                "extractor_retries": 1,
+                "format": (
+                    "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+                    if video else
+                    "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best"
+                ),
+                "extractor_args": {
+                    "youtube": {"player_client": [client]},
+                },
             }
             if cookie:
                 opts["cookiefile"] = cookie
+
             def extract():
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=False)
-                    return (info or {}).get("url")
+                    if not info:
+                        return None
+                    direct = info.get("url")
+                    if direct:
+                        return direct
+                    formats = info.get("formats") or []
+                    if video:
+                        candidates = [
+                            f for f in formats
+                            if f.get("url") and f.get("vcodec") not in (None, "none")
+                        ]
+                    else:
+                        candidates = [
+                            f for f in formats
+                            if f.get("url") and f.get("acodec") not in (None, "none")
+                        ]
+                    candidates.sort(
+                        key=lambda f: (
+                            float(f.get("abr") or 0),
+                            float(f.get("tbr") or 0),
+                            int(f.get("height") or 0),
+                        ),
+                        reverse=True,
+                    )
+                    return candidates[0].get("url") if candidates else None
+
             try:
-                direct = await asyncio.wait_for(asyncio.get_running_loop().run_in_executor(None, extract), timeout=15)
+                direct = await asyncio.wait_for(
+                    asyncio.get_running_loop().run_in_executor(None, extract),
+                    timeout=12,
+                )
                 if direct:
-                    logger.info(f"[yt-dlp] Direct stream ready via {player}: {vid}")
+                    logger.info(f"[YouTube] Direct stream ready via {client}: {video_id}")
                     return direct
             except Exception as e:
-                logger.warning(f"[yt-dlp] stream client {player} failed for {vid}: {e}")
-        return None
+                logger.warning(f"[YouTube] stream client {client} failed for {video_id}: {e}")
 
-    async def close(self):
-        client = getattr(self, "_client", None)
-        if client and not client.closed:
-            await client.close()
-
-    async def track_from_url(self, url: str, m_id: int, video: bool = False) -> Track | None:
-        """Build track metadata for a direct YouTube URL without py_yt extraction."""
-        vid = _youtube_video_id(url)
-        if not vid:
-            return None
-        try:
-            client = await self.get_client()
-            async with client.get(
-                "https://www.youtube.com/oembed",
-                params={"url": f"https://www.youtube.com/watch?v={vid}", "format": "json"},
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json(content_type=None)
-                    title = data.get("title") or "YouTube"
-                    channel = data.get("author_name") or "YouTube"
-                    track = Track(
-                        id=vid, channel_name=channel, duration="", duration_sec=0,
-                        message_id=m_id, title=title[:80],
-                        thumbnail=data.get("thumbnail_url"),
-                        url=f"https://www.youtube.com/watch?v={vid}",
-                        view_count="", video=video,
-                    )
-                    self.track_context[str(vid)] = title
-                    return track
-        except Exception as e:
-            logger.warning(f"[YouTube] oEmbed failed for {vid}: {e}")
         return None
 
     async def autoplay_track(
@@ -426,10 +466,14 @@ class YouTube:
         if not video_id or len(video_id) < 3:
             return None
 
+        yuki_file = await _yuki_download(video_id, video=video)
+        if yuki_file:
+            return yuki_file
+
+        # Shruti remains as the secondary server-side fallback.
         if video:
             return await download_video(video_id)
-        else:
-            return await download_song(video_id)
+        return await download_song(video_id)
 
     def _format_duration(self, seconds: int) -> str:
         seconds = max(int(seconds or 0), 0)
