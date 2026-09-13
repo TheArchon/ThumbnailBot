@@ -39,7 +39,7 @@ async def start(_, message: types.Message):
         # Send text first. This makes /start reliable even when START_VIDEO
         # points to an expired/unreachable media URL.
         try:
-            await message.reply_text(text=_text, reply_markup=key, quote=not private)
+            await message.reply_text(text=_text, reply_markup=key)
         except Exception as e:
             logger.exception("/start reply failed: %s", e)
             return
