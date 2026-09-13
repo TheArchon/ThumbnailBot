@@ -26,7 +26,7 @@ class Config:
         self.SUPPORT_CHAT = getenv("SUPPORT_CHAT", "https://t.me/hot_dpz_stor")
 
         self.API_URL = getenv("SHRUTI_API_URL", "https://api.shrutibots.site")
-        self.API_KEY = getenv("SHRUTI_API_KEY", "ShrutiBotswFO5UMhbdcYIYaFcC17Y") ## Get This API KEY FROM TELEGRAM BOT USERNAME: @SHRUTIAPIBOT 
+        self.API_KEY = getenv("SHRUTI_API_KEY", "") ## Get This API KEY FROM TELEGRAM BOT USERNAME: @SHRUTIAPIBOT 
         
         self.AUTO_LEAVE: bool = getenv("AUTO_LEAVE", "False").lower() == "true"
         self.AUTO_END: bool = getenv("AUTO_END", "False").lower() == "true"
