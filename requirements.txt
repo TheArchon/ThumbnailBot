@@ -10,3 +10,4 @@ py-yt-search>=0.8.0,<0.9.0
 python-dotenv~=1.2.1
 speedtest-cli
 yt-dlp[default]>=2026.3.13
+yukiytapi~=1.0.0
