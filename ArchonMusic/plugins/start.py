@@ -35,12 +35,23 @@ async def start(_, message: types.Message):
     )
 
     key = buttons.start_key(message.lang, private)
-    await message.reply_video(
-        video=config.START_VIDEO,
-        caption=_text,
-        reply_markup=key,
-        reply_to_message_id=message.id if not private else None,
-    )
+
+    # Send the bundled start video first. If Telegram rejects the video for any
+    # reason, still show the normal /start message instead of failing silently.
+    try:
+        await message.reply_video(
+            video=config.START_VIDEO,
+            caption=_text,
+            reply_markup=key,
+            quote=not private,
+        )
+    except Exception as video_error:
+        print(f"/start video failed: {video_error}")
+        await message.reply_text(
+            text=_text,
+            reply_markup=key,
+            quote=not private,
+        )
 
     if private:
         if await db.is_user(message.from_user.id):
