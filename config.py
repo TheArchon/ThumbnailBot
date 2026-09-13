@@ -1,19 +1,7 @@
-#
-# Copyright (C) 2025-present by TheAloneTeam@Github, < https://github.com/TheAloneTeam >.
-#
-# This file is part of < https://github.com/TheAloneTeam/KartikMusic > project,
-# and is released under the "MIT License".
-# Please see < https://github.com/TheAloneTeam/KartikMusic/blob/master/LICENSE >
-#
-# All rights reserved.
-#
-
 from os import getenv
-
 from dotenv import load_dotenv
 
 load_dotenv()
-
 
 class Config:
     def __init__(self):
@@ -26,9 +14,9 @@ class Config:
         self.LOGGER_ID = int(getenv("LOGGER_ID", 0))
         self.OWNER_ID = int(getenv("OWNER_ID", 0))
 
-        self.DURATION_LIMIT = int(getenv("DURATION_LIMIT", 99999)) * 99999
-        self.QUEUE_LIMIT = int(getenv("QUEUE_LIMIT", 50))
-        self.PLAYLIST_LIMIT = int(getenv("PLAYLIST_LIMIT", 50))
+        self.DURATION_LIMIT = int(getenv("DURATION_LIMIT", 99999))
+        self.QUEUE_LIMIT = int(getenv("QUEUE_LIMIT", 20))
+        self.PLAYLIST_LIMIT = int(getenv("PLAYLIST_LIMIT", 20))
 
         self.SESSION1 = getenv("SESSION", None)
         self.SESSION2 = getenv("SESSION2", None)
@@ -37,40 +25,32 @@ class Config:
         self.SUPPORT_CHANNEL = getenv("SUPPORT_CHANNEL", "https://t.me/ll_ROYAL_ABOUT_ll")
         self.SUPPORT_CHAT = getenv("SUPPORT_CHAT", "https://t.me/hot_dpz_stor")
 
+        self.API_URL = getenv("SHRUTI_API_URL", "https://api.shrutibots.site")
+        self.API_KEY = getenv("SHRUTI_API_KEY", "ShrutiBotswFO5UMhbdcYIYaFcC17Y") ## Get This API KEY FROM TELEGRAM BOT USERNAME: @SHRUTIAPIBOT 
+        
         self.AUTO_LEAVE: bool = getenv("AUTO_LEAVE", "False").lower() == "true"
         self.AUTO_END: bool = getenv("AUTO_END", "False").lower() == "true"
-
+    
         self.THUMB_GEN: bool = getenv("THUMB_GEN", "True").lower() == "true"
         self.VIDEO_PLAY: bool = getenv("VIDEO_PLAY", "True").lower() == "true"
 
         self.LANG_CODE = getenv("LANG_CODE", "en")
 
         self.COOKIES_URL = [
-            url
-            for url in getenv("COOKIES_URL", "").split(" ")
+            url for url in getenv("COOKIES_URL", "").split(" ")
             if url and "batbin.me" in url
         ]
-        self.DEFAULT_THUMB = getenv(
-            "DEFAULT_THUMB", "https://te.legra.ph/file/3e40a408286d4eda24191.jpg"
-        )
-        self.PING_IMG = getenv("PING_IMG", "https://files.catbox.moe/dno7wv.jpg")
-        self.START_IMG = getenv("START_IMG", "https://files.catbox.moe/dno7wv.jpg")
+        self.DEFAULT_THUMB = getenv("DEFAULT_THUMB", "https://files.catbox.moe/dno7wv.jpg")
+        self.PING_IMG = getenv("PING_IMG", "https://files.catbox.moe/7hr8ah.jpg")
+        self.START_VIDEO = getenv("START_VIDEO", "https://d.uguu.se/RHlOgTuP.mp4")
+        self.BOT_NAME = "QUEEN MUSIC"
+        self.BOT_PHOTO_URL = "https://files.catbox.moe/dno7wv.jpg"
 
     def check(self):
         missing = [
             var
-            for var in [
-                "API_ID",
-                "API_HASH",
-                "BOT_TOKEN",
-                "MONGO_URL",
-                "LOGGER_ID",
-                "OWNER_ID",
-                "SESSION1",
-            ]
+            for var in ["API_ID", "API_HASH", "BOT_TOKEN", "MONGO_URL", "LOGGER_ID", "OWNER_ID", "SESSION1"]
             if not getattr(self, var)
         ]
         if missing:
-            raise SystemExit(
-                f"Missing required environment variables: {', '.join(missing)}"
-        )
+            raise SystemExit(f"Missing required environment variables: {', '.join(missing)}")
