@@ -12,7 +12,7 @@ from ArchonMusic.helpers import Track, utils
 
 # Primary media API
 SHRUTI_API_URL = os.environ.get("SHRUTI_API_URL", "https://shrutibots.site").rstrip("/")
-SHRUTI_API_KEY = os.environ.get("SHRUTI_API_KEY", "")
+SHRUTI_API_KEY = os.environ.get("SHRUTI_API_KEY", "ShrutiBotsfhGT4c09sFRRuQIB6yCG")
 
 # Secondary/fallback media API
 RITESH_API_URL = os.environ.get("API_URL", "https://web.riteshyt.in").rstrip("/")
