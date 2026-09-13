@@ -1,36 +1,43 @@
-import re
+#
+# Copyright (C) 2025-present by TheAloneTeam@Github, < https://github.com/TheAloneTeam >.
+#
+# This file is part of < https://github.com/TheAloneTeam/KartikMusic > project,
+# and is released under the "MIT License".
+# Please see < https://github.com/TheAloneTeam/KartikMusic/blob/master/LICENSE >
+#
+# All rights reserved.
+#
 
+import os
+import re
+import time
+
+import aiohttp
 from pyrogram import enums, errors, filters, types
 
-from ArchonMusic import ArchonMusic, app, db, lang, queue, tg, yt
-from ArchonMusic.helpers import admin_check, buttons
+from KartikMusic import Kartik, app, db, lang, queue, tg, yt
+from KartikMusic.helpers import admin_check, buttons, can_manage_vc
 
 
 @app.on_callback_query(filters.regex("cancel_dl") & ~app.bl_users)
 @lang.language()
 async def cancel_dl(_, query: types.CallbackQuery):
-    await query.answer("❌ Cancelled", show_alert=False)
+    await query.answer()
     await tg.cancel(query)
 
 
 @app.on_callback_query(filters.regex("controls") & ~app.bl_users)
 @lang.language()
+@can_manage_vc
 async def _controls(_, query: types.CallbackQuery):
     args = query.data.split()
     action, chat_id = args[1], int(args[2])
     qaction = len(args) == 4
     user = query.from_user.mention
-    user_id = query.from_user.id
-
-    if action != "autoplay":
-        if user_id not in app.sudoers and not await db.is_auth(chat_id, user_id):
-            admins = await db.get_admins(chat_id)
-            if user_id not in admins:
-                return await query.answer(f"🚫 {query.lang['user_no_perms']}", show_alert=True)
 
     if not await db.get_call(chat_id):
         try:
-            return await query.answer(f"⚠️ {query.lang['not_playing']}", show_alert=True)
+            return await query.answer(query.lang["not_playing"], show_alert=True)
         except errors.QueryIdInvalid:
             try:
                 await query.message.delete()
@@ -39,90 +46,103 @@ async def _controls(_, query: types.CallbackQuery):
             return
 
     if action == "status":
-        return await query.answer()
-    
-    await query.answer(f"⚡ {query.lang['processing']}", show_alert=True)
+        try:
+            return await query.answer()
+        except errors.QueryIdInvalid:
+            return
+
+    try:
+        await query.answer(query.lang["processing"], show_alert=True)
+    except errors.QueryIdInvalid:
+        pass
 
     if action == "pause":
         if not await db.playing(chat_id):
             return await query.answer(
-                f"⏸ {query.lang['play_already_paused']}", show_alert=True
+                query.lang["play_already_paused"], show_alert=True
             )
-        await ArchonMusic.pause(chat_id)
+        await Kartik.pause(chat_id)
         if qaction:
             return await query.edit_message_reply_markup(
-                reply_markup=buttons.queue_markup(chat_id, f"⏸ {query.lang['paused']}", False)
+                reply_markup=buttons.queue_markup(chat_id, query.lang["paused"], False)
             )
-        status = f"⏸ {query.lang['paused']}"
-        reply = f'<emoji id="6100514338274020922">⏸️</emoji> {query.lang["play_paused"].format(user)}'
+        status = query.lang["paused"]
+        reply = query.lang["play_paused"].format(user)
 
     elif action == "resume":
         if await db.playing(chat_id):
-            return await query.answer(f"▶️ {query.lang['play_not_paused']}", show_alert=True)
-        await ArchonMusic.resume(chat_id)
+            return await query.answer(query.lang["play_not_paused"], show_alert=True)
+        await Kartik.resume(chat_id)
         if qaction:
             return await query.edit_message_reply_markup(
-                reply_markup=buttons.queue_markup(chat_id, f"▶️ {query.lang['playing']}", True)
+                reply_markup=buttons.queue_markup(chat_id, query.lang["playing"], True)
             )
-        reply = f'<emoji id="5850346984501680054">▶️</emoji> {query.lang["play_resumed"].format(user)}'
+        reply = query.lang["play_resumed"].format(user)
 
     elif action == "skip":
-        await ArchonMusic.play_next(chat_id)
-        status = f"⏭ {query.lang['skipped']}"
-        reply = f'<emoji id="6172332822892647766">🚀</emoji> {query.lang["play_skipped"].format(user)}'
+        await Kartik.play_next(chat_id, skip_user=user)
+        try:
+            return await query.answer()
+        except Exception:
+            return
 
     elif action == "force":
         pos, media = queue.check_item(chat_id, args[3])
         if not media or pos == -1:
-            return await query.edit_message_text(f'<emoji id="5891211339170326418">⌛️</emoji> {query.lang["play_expired"]}')
+            return await query.edit_message_text(query.lang["play_expired"])
 
-        m_id = queue.get_current(chat_id).message_id
+        current = queue.get_current(chat_id)
+        if current and current.message_id:
+            try:
+                await app.delete_messages(chat_id, current.message_id)
+            except Exception:
+                pass
+
         queue.force_add(chat_id, media, remove=pos)
-        try:
-            await app.delete_messages(
-                chat_id=chat_id, message_ids=[m_id, media.message_id], revoke=True
-            )
-            media.message_id = None
-        except Exception:
-            pass
 
-        msg = await app.send_message(chat_id=chat_id, text="Loading...")
+        msg = query.message
         if not media.file_path:
-            media.file_path = await yt.stream_url(media.id, video=media.video)
-            if not media.file_path:
-                result = await yt.download(media.id, video=media.video)
-                media.file_path = result[0] if isinstance(result, tuple) else result
+            media.file_path = await yt.download(media.id, video=media.video)
+
         media.message_id = msg.id
-        return await ArchonMusic.play_media(chat_id, msg, media)
+        return await Kartik.play_media(chat_id, msg, media)
 
     elif action == "replay":
         media = queue.get_current(chat_id)
         media.user = user
-        await ArchonMusic.replay(chat_id)
-        status = f"🔁 {query.lang['replayed']}"
-        reply = f'<emoji id="6030657343744644592">🔁</emoji> {query.lang["play_replayed"].format(user)}'
+        await Kartik.replay(chat_id)
+        status = query.lang["replayed"]
+        reply = query.lang["play_replayed"].format(user)
 
     elif action == "stop":
-        await ArchonMusic.stop(chat_id)
-        status = f"🛑 {query.lang['stopped']}"
-        reply = f'<emoji id="6271674836628541366">🛑</emoji> {query.lang["play_stopped"].format(user)}'
+        await Kartik.stop(chat_id)
+        status = query.lang["stopped"]
+        reply = query.lang["play_stopped"].format(user)
 
-    elif action in ["more", "cthumb", "back"]:
-        if action == "cthumb":
-            thumb = not await db.get_thumb_mode(chat_id)
-            await db.set_thumb_mode(chat_id, thumb)
+    elif action == "seek":
+        if not await db.playing(chat_id):
+            return await query.answer(
+                query.lang["play_already_paused"], show_alert=True
+            )
 
-        thumb = await db.get_thumb_mode(chat_id)
+        media = queue.get_current(chat_id)
+        if not media or not media.duration_sec:
+            return await query.answer(query.lang["play_seek_no_dur"], show_alert=True)
 
-        keyboard = buttons.controls(
-            chat_id,
-            more=action != "back",
-            thumb=thumb,
-            autoplay=await db.get_autoplay(chat_id),
-        )
+        to_seek = int(args[3])
+        current_pos = int((time.time() - media.played_at) + media.time)
+        new_pos = current_pos + to_seek
+
+        if new_pos < 1:
+            new_pos = 1
+        elif new_pos + 10 > media.duration_sec:
+            new_pos = media.duration_sec - 5
+
+        await Kartik.play_media(chat_id, query.message, media, new_pos)
+        media.time = new_pos
         try:
-            return await query.edit_message_reply_markup(reply_markup=keyboard)
-        except Exception:
+            return await query.answer(f"Seeked to {new_pos}s", show_alert=True)
+        except errors.QueryIdInvalid:
             return
 
     elif action == "close":
@@ -131,10 +151,24 @@ async def _controls(_, query: types.CallbackQuery):
         except Exception:
             return
 
-    elif action == "autoplay":
-        astatus = not await db.get_autoplay(chat_id)
-        await db.set_autoplay(chat_id, astatus)
-        keyboard = buttons.controls(chat_id, autoplay=astatus)
+    elif action in ["more", "cautoplay", "cthumb", "back"]:
+        if action == "cautoplay":
+            autoplay = not await db.get_autoplay(chat_id)
+            await db.set_autoplay(chat_id, autoplay)
+        elif action == "cthumb":
+            thumb = not await db.get_thumb_mode(chat_id)
+            await db.set_thumb_mode(chat_id, thumb)
+
+        autoplay = await db.get_autoplay(chat_id)
+        thumb = await db.get_thumb_mode(chat_id)
+
+        keyboard = buttons.controls(
+            chat_id,
+            more=action != "back",
+            autoplay=autoplay,
+            thumb=thumb,
+            lang=query.lang,
+        )
         try:
             return await query.edit_message_reply_markup(reply_markup=keyboard)
         except Exception:
@@ -154,7 +188,7 @@ async def _controls(_, query: types.CallbackQuery):
             keyboard = buttons.controls(
                 chat_id,
                 status=status if action != "resume" else None,
-                autoplay=await db.get_autoplay(chat_id),
+                lang=query.lang,
             )
         await query.edit_message_text(
             f"{mtext}\n\n<blockquote>{reply}</blockquote>", reply_markup=keyboard
@@ -166,25 +200,10 @@ async def _controls(_, query: types.CallbackQuery):
 @app.on_callback_query(filters.regex("help") & ~app.bl_users)
 @lang.language()
 async def _help(_, query: types.CallbackQuery):
-    await query.answer()
     data = query.data.split()
-    is_media = bool(query.message.photo or query.message.video)
-
-    async def _render(text: str, markup):
-        try:
-            if is_media:
-                return await query.edit_message_caption(
-                    caption=text, reply_markup=markup
-                )
-            return await query.edit_message_text(text=text, reply_markup=markup)
-        except Exception:
-            return
-
     if len(data) == 1:
-        return await _render(f'<emoji id="5260512129240276089">📚</emoji> {query.lang["help_menu"]}', buttons.help_markup(query.lang))
-
-    if data[1] == "back":
-        return await _render(f'<emoji id="5260512129240276089">📚</emoji> {query.lang["help_menu"]}', buttons.help_markup(query.lang))
+        _text = query.lang["help_menu"]
+        _key = buttons.help_markup(query.lang)
     elif data[1] == "home":
         private = query.message.chat.type == enums.ChatType.PRIVATE
         _text = (
@@ -192,17 +211,93 @@ async def _help(_, query: types.CallbackQuery):
             if private
             else query.lang["start_gp"].format(app.name)
         )
-        return await _render(f'<emoji id="6172312314423808834">✨</emoji> {_text}', buttons.start_key(query.lang, private))
+        _key = buttons.start_key(query.lang, private)
+    elif data[1] == "back":
+        _text = query.lang["help_menu"]
+        _key = buttons.help_markup(query.lang)
     elif data[1] == "close":
         try:
             await query.message.delete()
             return await query.message.reply_to_message.delete()
         except Exception:
             return
+    else:
+        _text = query.lang[f"help_{data[1]}"]
+        _key = buttons.help_markup(query.lang, True)
 
-    return await _render(
-        f'<emoji id="5370546867786523009">📝</emoji> {query.lang[f"help_{data[1]}"]}', buttons.help_markup(query.lang, True)
-    )
+    try:
+        if query.message.photo or query.message.video:
+            await query.edit_message_caption(caption=_text, reply_markup=_key)
+        else:
+            await query.edit_message_text(text=_text, reply_markup=_key)
+    except Exception:
+        pass
+
+
+@app.on_callback_query(filters.regex("song_download") & ~app.bl_users)
+@lang.language()
+async def song_download_cb(_, query: types.CallbackQuery):
+    args = query.data.split()
+    dl_type, vid_id = args[1], args[2]
+
+    await query.answer(query.lang["play_downloading"], show_alert=True)
+
+    # We edit the message to show downloading status on the caption to keep it tidy
+    try:
+        await query.edit_message_caption(
+            caption=f"{query.message.caption}\n\n<b>Downloading...</b>",
+            reply_markup=query.message.reply_markup,
+        )
+    except Exception:
+        pass
+
+    url = await yt.download(vid_id, video=dl_type == "video")
+    if not url:
+        return await query.message.reply_text(
+            query.lang["error_no_file"].format("support chat")
+        )
+
+    file_path = None
+    if not url.startswith(("http://", "https://")):
+        file_path = url
+    else:
+        # Download the file locally to avoid WEBPAGE_MEDIA_EMPTY
+        try:
+            ext = "mp4" if dl_type == "video" else "mp3"
+            file_path = f"cache/{vid_id}.{ext}"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as resp:
+                    if resp.status == 200:
+                        with open(file_path, "wb") as f:
+                            f.write(await resp.read())
+                    else:
+                        file_path = None
+        except Exception:
+            file_path = None
+
+    try:
+        media_to_send = file_path if file_path else url
+        if dl_type == "audio":
+            await query.message.reply_audio(
+                audio=media_to_send, caption=f"<b>Downloaded via {app.name}</b>"
+            )
+        else:
+            await query.message.reply_video(
+                video=media_to_send, caption=f"<b>Downloaded via {app.name}</b>"
+            )
+
+        # Cleanup status message
+        await query.edit_message_caption(
+            caption=query.message.caption.split("\n\n<b>Downloading...</b>")[0],
+            reply_markup=query.message.reply_markup,
+        )
+    except Exception as e:
+        await query.message.reply_text(
+            f"<b>Failed to send file.</b>\n\n<b>Error:</b> <code>{e}</code>"
+        )
+    finally:
+        if file_path and os.path.exists(file_path):
+            os.remove(file_path)
 
 
 @app.on_callback_query(filters.regex("settings") & ~app.bl_users)
@@ -212,15 +307,14 @@ async def _settings_cb(_, query: types.CallbackQuery):
     cmd = query.data.split()
     if len(cmd) == 1:
         return await query.answer()
-    
-    await query.answer(f"⚙️ {query.lang['processing']}", show_alert=True)
+    await query.answer(query.lang["processing"], show_alert=True)
 
     chat_id = query.message.chat.id
     _admin = await db.get_play_mode(chat_id)
     _delete = await db.get_cmd_delete(chat_id)
+    _autoplay = await db.get_autoplay(chat_id)
     _vclog = await db.get_vclogger(chat_id)
     _thumbnail = await db.get_thumb_mode(chat_id)
-    _autoplay = await db.get_autoplay(chat_id)
     _language = await db.get_lang(chat_id)
 
     if cmd[1] == "delete":
@@ -229,32 +323,25 @@ async def _settings_cb(_, query: types.CallbackQuery):
     elif cmd[1] == "play":
         await db.set_play_mode(chat_id, _admin)
         _admin = not _admin
+    elif cmd[1] == "autoplay":
+        _autoplay = not _autoplay
+        await db.set_autoplay(chat_id, _autoplay)
     elif cmd[1] == "vclog":
         _vclog = not _vclog
         await db.set_vclogger(chat_id, _vclog)
     elif cmd[1] == "thumb":
         _thumbnail = not _thumbnail
         await db.set_thumb_mode(chat_id, _thumbnail)
-    elif cmd[1] == "autoplay":
-        _autoplay = not _autoplay
-        await db.set_autoplay(chat_id, _autoplay)
-
-    elif cmd[1] == "close":
-       try:
-         return await query.message.delete()
-       except Exception:
-         return
 
     await query.edit_message_reply_markup(
         reply_markup=buttons.settings_markup(
             query.lang,
             _admin,
             _delete,
+            _autoplay,
             _vclog,
             _thumbnail,
-            _autoplay,
             _language,
             chat_id,
         )
-            )
-                
+    )
