@@ -12,7 +12,7 @@ from ArchonMusic.helpers import Track, utils
 
 # Primary media API
 SHRUTI_API_URL = os.environ.get("SHRUTI_API_URL", "https://shrutibots.site").rstrip("/")
-SHRUTI_API_KEY = os.environ.get("SHRUTI_API_KEY", "ShrutiBotsfhGT4c09sFRRuQIB6yCG")
+SHRUTI_API_KEY = os.environ.get("SHRUTI_API_KEY", "")
 
 # Secondary/fallback media API
 RITESH_API_URL = os.environ.get("API_URL", "https://web.riteshyt.in").rstrip("/")
@@ -292,7 +292,7 @@ class YouTube:
         if SHRUTI_API_KEY:
             try:
                 url = f"{SHRUTI_API_URL}/stream/{vid}"
-                async with client.get(url, params={"api_key": SHRUTI_API_KEY}, headers={"Range": "bytes=0-1"}) as resp:
+                async with client.get(url, params={"api_key": SHRUTI_API_KEY}, headers={"Range": "bytes=0-1"}, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                     ctype = (resp.headers.get("Content-Type") or "").lower()
                     if resp.status in (200, 206) and "json" not in ctype and "text/html" not in ctype:
                         logger.info(f"[Shruti] Stream ready: {vid}")
@@ -309,6 +309,7 @@ class YouTube:
                     params={"url": vid, "type": "audio", "api_key": RITESH_API_KEY},
                     headers={"Range": "bytes=0-1"},
                     allow_redirects=True,
+                    timeout=aiohttp.ClientTimeout(total=5),
                 ) as resp:
                     ctype = (resp.headers.get("Content-Type") or "").lower()
                     if resp.status in (200, 206) and "json" not in ctype and "text/html" not in ctype:
