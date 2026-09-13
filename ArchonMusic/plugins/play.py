@@ -57,13 +57,7 @@ async def play_hndlr(
             tracks.remove(file)
             file.message_id = sent.id
         else:
-            # Resolve direct YouTube URLs through the server-side API first.
-            # Never feed a URL into VideosSearch on Heroku/cloud IPs.
-            file = None
-            if hasattr(yt, "track_from_url"):
-                file = await yt.track_from_url(url, sent.id, video=video)
-            if not file:
-                file = await yt.search(url, sent.id, video=video)
+            file = await yt.search(url, sent.id, video=video)
 
         if not file:
             return await sent.edit_text(
@@ -141,11 +135,8 @@ async def play_hndlr(
 
     if not file.file_path:
         fname = f"downloads/{file.id}.{'mp4' if video else 'webm'}"
-        mp3name = f"downloads/{file.id}.mp3"
         if Path(fname).exists():
             file.file_path = fname
-        elif not video and Path(mp3name).exists():
-            file.file_path = mp3name
         else:
             # Stream directly from the download API's URL instead of
             # waiting for the full file to save to disk first — ffmpeg
@@ -154,9 +145,8 @@ async def play_hndlr(
             # valid media for this video (rare).
             file.file_path = await yt.stream_url(file.id, video=video)
             if not file.file_path:
-                return await sent.edit_text(
-                    m.lang["play_not_found"].format(config.SUPPORT_CHAT)
-                )
+                await sent.edit_text(m.lang["play_downloading"])
+                file.file_path = await yt.download(file.id, video=video)
 
     await ArchonMusic.play_media(chat_id=m.chat.id, message=sent, media=file)
     if not tracks:
