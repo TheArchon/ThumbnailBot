@@ -1,11 +1,19 @@
+#
+# Copyright (C) 2025-present by TheAloneTeam@Github, < https://github.com/TheAloneTeam >.
+#
+# This file is part of < https://github.com/TheAloneTeam/KartikMusic > project,
+# and is released under the "MIT License".
+# Please see < https://github.com/TheAloneTeam/KartikMusic/blob/master/LICENSE >
+#
+# All rights reserved.
+#
+
 import asyncio
+
 from pyrogram import enums, filters, types
 
-from ArchonMusic import app, config, db, lang, logger
-from ArchonMusic.helpers import admin_check, buttons, utils
-from pyrogram.enums import ButtonStyle
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-
+from KartikMusic import app, config, db, lang
+from KartikMusic.helpers import buttons, utils
 
 
 @app.on_message(filters.command(["help"]) & filters.private & ~app.bl_users)
@@ -21,52 +29,46 @@ async def _help(_, m: types.Message):
 @app.on_message(filters.command(["start"]))
 @lang.language()
 async def start(_, message: types.Message):
-    try:
-        if message.from_user and message.from_user.id in app.bl_users and message.from_user.id not in db.notified:
-            return await message.reply_text(message.lang["bl_user_notify"])
+    if message.from_user.id in app.bl_users and message.from_user.id not in db.notified:
+        return await message.reply_text(message.lang["bl_user_notify"])
 
-        if len(message.command) > 1 and message.command[1] == "help":
-            return await _help(_, message)
+    if len(message.command) > 1 and message.command[1] == "help":
+        return await _help(_, message)
 
-        private = message.chat.type == enums.ChatType.PRIVATE
-        _text = (
-            message.lang["start_pm"].format(message.from_user.first_name, app.name)
-            if private
-            else message.lang["start_gp"].format(app.name)
-        )
-        key = buttons.start_key(message.lang, private)
+    private = message.chat.type == enums.ChatType.PRIVATE
+    _text = (
+        message.lang["start_pm"].format(message.from_user.first_name, app.name)
+        if private
+        else message.lang["start_gp"].format(app.name)
+    )
 
-        # Send text first. This makes /start reliable even when START_VIDEO
-        # points to an expired/unreachable media URL.
-        try:
-            await message.reply_text(text=_text, reply_markup=key)
-        except Exception as e:
-            logger.exception("/start reply failed: %s", e)
+    key = buttons.start_key(message.lang, private)
+    await message.reply_photo(
+        photo=config.START_IMG,
+        caption=_text,
+        reply_markup=key,
+        quote=not private,
+    )
+
+    if private:
+        if await db.is_user(message.from_user.id):
             return
-
-        if private:
-            await utils.send_log(message)
-            if not await db.is_user(message.from_user.id):
-                await db.add_user(message.from_user.id)
-        else:
-            await utils.send_log(message, True)
-            if not await db.is_chat(message.chat.id):
-                await db.add_chat(message.chat.id)
-    except Exception as e:
-        logger.exception("/start handler failed: %s", e)
-        try:
-            await message.reply_text("Start menu failed. Please try /help.")
-        except Exception:
-            pass
+        await utils.send_log(message)
+        await db.add_user(message.from_user.id)
+    else:
+        if await db.is_chat(message.chat.id):
+            return
+        await utils.send_log(message, True)
+        await db.add_chat(message.chat.id)
 
 
-@app.on_message(filters.command(["settings", "playmode"]) & filters.group & ~app.bl_users)
+@app.on_message(
+    filters.command(["playmode", "settings"]) & filters.group & ~app.bl_users
+)
 @lang.language()
-@admin_check
 async def settings(_, message: types.Message):
     admin_only = await db.get_play_mode(message.chat.id)
     cmd_delete = await db.get_cmd_delete(message.chat.id)
-    vclogger = await db.get_vclogger(message.chat.id)
     thumbnail = await db.get_thumb_mode(message.chat.id)
     autoplay = await db.get_autoplay(message.chat.id)
     _language = await db.get_lang(message.chat.id)
@@ -76,14 +78,14 @@ async def settings(_, message: types.Message):
             message.lang,
             admin_only,
             cmd_delete,
-            vclogger,
-            thumbnail,
             autoplay,
+            thumbnail,
             _language,
             message.chat.id,
         ),
         quote=True,
     )
+
 
 @app.on_message(filters.new_chat_members, group=7)
 @lang.language()
@@ -94,63 +96,7 @@ async def _new_member(_, message: types.Message):
     await asyncio.sleep(3)
     for member in message.new_chat_members:
         if member.id == app.id:
-            #if await db.is_chat(message.chat.id):
-                #return
+            if await db.is_chat(message.chat.id):
+                return
             await utils.send_log(message, True)
             await db.add_chat(message.chat.id)
-
-            adder = message.from_user.mention if message.from_user else "there"
-            _text = message.lang["chat_added"].format(
-                adder, app.name, message.lang["support"]
-            )
-            key = types.InlineKeyboardMarkup(
-                [
-                    [
-                        types.InlineKeyboardButton(
-                            text=message.lang["support"],
-                            url=config.SUPPORT_CHAT,
-                            style=ButtonStyle.PRIMARY,
-                        )
-                    ]
-                ]
-            )
-            try:
-                await app.send_video(
-                    chat_id=message.chat.id,
-                    video=config.START_VIDEO,
-                    caption=_text,
-                    reply_markup=key,
-                )
-            except Exception:
-                try:
-                    await app.send_message(
-                        chat_id=message.chat.id,
-                        text=_text,
-                        reply_markup=key,
-                    )
-                except Exception:
-                    pass
-
-
-@app.on_message(filters.left_chat_member, group=8)
-async def _left_member(_, message: types.Message):
-    if message.left_chat_member and message.left_chat_member.id == app.id:
-        await utils.send_left_log(message.chat.id, message.chat.title, message.from_user)
-        await db.rm_chat(message.chat.id)
-
-
-@app.on_chat_member_updated()
-async def _my_chat_member_updated(_, member: types.ChatMemberUpdated):
-    if not member.old_chat_member or not member.new_chat_member:
-        return
-    old_status = member.old_chat_member.status
-    new_status = member.new_chat_member.status
-
-    if (
-        old_status in [enums.ChatMemberStatus.MEMBER, enums.ChatMemberStatus.ADMINISTRATOR]
-        and new_status in [enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED]
-    ):
-        if member.new_chat_member.user and member.new_chat_member.user.id == app.id:
-            await utils.send_left_log(member.chat.id, member.chat.title, member.from_user)
-            await db.rm_chat(member.chat.id)
-    
