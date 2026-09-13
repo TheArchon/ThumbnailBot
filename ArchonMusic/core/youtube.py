@@ -275,29 +275,51 @@ class YouTube:
         return None
 
     async def stream_url(self, video_id: str, video: bool = False) -> str | None:
-        """Return a direct API media URL for immediate playback.
+        """Return a verified direct media URL using both configured APIs.
 
-        Do not probe the provider with a Range request here. Shruti's current
-        public API exposes /download as the media endpoint; probing the old
-        /stream route can return HTTP 422 and unnecessarily force a full
-        download before playback. The player/ffmpeg can consume the returned
-        API URL directly.
+        Order: Ritesh -> Shruti -> yt-dlp fallback.
+        Ritesh uses its optimized /downloads/... route. Shruti uses the
+        current /download endpoint; the old /stream endpoint is intentionally
+        not used because it can return HTTP 422.
         """
         vid = _youtube_video_id(video_id) or str(video_id or "").strip()
         if not vid:
             return None
 
-        # Ritesh is the preferred fast path when API_KEY is configured in
-        # Heroku. The URL itself is the media source; no pre-download.
+        client = await self.get_client()
+
+        async def verify(url: str, provider: str) -> str | None:
+            try:
+                timeout = aiohttp.ClientTimeout(total=12, connect=4)
+                async with client.get(
+                    url,
+                    headers={"Range": "bytes=0-1"},
+                    allow_redirects=True,
+                    timeout=timeout,
+                ) as resp:
+                    ctype = (resp.headers.get("Content-Type") or "").lower()
+                    if resp.status in (200, 206) and not any(
+                        x in ctype for x in ("application/json", "text/html", "text/plain")
+                    ):
+                        logger.info(f"[{provider}] Stream ready: {vid}")
+                        return str(resp.url)
+                    logger.warning(f"[{provider}] Stream unavailable: HTTP {resp.status}")
+            except Exception as e:
+                logger.warning(f"[{provider}] Stream check failed: {e}")
+            return None
+
+        # 1) Ritesh optimized media URL.
         if RITESH_API_KEY:
             ext = "mp4" if video else "mp3"
-            return (
+            ritesh_url = (
                 f"{RITESH_API_URL}/downloads/"
                 f"{RITESH_API_KEY}/youtube.com/{vid}.{ext}"
             )
+            ready = await verify(ritesh_url, "Ritesh")
+            if ready:
+                return ready
 
-        # Shruti's current API returns the media body directly from /download.
-        # Keep this as the fallback when Ritesh is not configured.
+        # 2) Shruti current media endpoint.
         if SHRUTI_API_KEY:
             from urllib.parse import urlencode
             params = urlencode({
@@ -305,8 +327,12 @@ class YouTube:
                 "type": "video" if video else "audio",
                 "api_key": SHRUTI_API_KEY,
             })
-            return f"{SHRUTI_API_URL}/download?{params}"
+            shruti_url = f"{SHRUTI_API_URL}/download?{params}"
+            ready = await verify(shruti_url, "Shruti")
+            if ready:
+                return ready
 
+        logger.warning(f"[YouTube] Both API stream providers failed for {vid}")
         return None
 
     async def close(self):
