@@ -151,24 +151,51 @@ async def _ytdlp_download(video_id: str, video: bool = False) -> str | None:
     return None
 
 
+async def _first_download(video_id: str, video: bool = False) -> str | None:
+    """Race the two API download providers; fall back to yt-dlp only if both fail."""
+    tasks = [
+        asyncio.create_task(_shruti_download(video_id, video)),
+        asyncio.create_task(_ritesh_download(video_id, video)),
+    ]
+    try:
+        pending = set(tasks)
+        while pending:
+            done, pending = await asyncio.wait(
+                pending, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in done:
+                try:
+                    result = task.result()
+                except Exception as e:
+                    logger.warning(f"[Download] provider failed: {e!r}")
+                    result = None
+                if result:
+                    for other in pending:
+                        other.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
+                    return result
+        return None
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 async def download_song(link: str) -> str | None:
     video_id = _youtube_video_id(link)
     if not video_id:
         return None
-    # Priority: Shruti -> Ritesh -> yt-dlp
-    return (await _shruti_download(video_id, False)
-            or await _ritesh_download(video_id, False)
-            or await _ytdlp_download(video_id, False))
+    result = await _first_download(video_id, False)
+    return result or await _ytdlp_download(video_id, False)
 
 
 async def download_video(link: str) -> str | None:
     video_id = _youtube_video_id(link)
     if not video_id:
         return None
-    # Priority: Shruti -> Ritesh -> yt-dlp
-    return (await _shruti_download(video_id, True)
-            or await _ritesh_download(video_id, True)
-            or await _ytdlp_download(video_id, True))
+    result = await _first_download(video_id, True)
+    return result or await _ytdlp_download(video_id, True)
 
 
 class YouTube:
@@ -717,6 +744,25 @@ class YouTube:
             return True
         return int(duration_sec or 0) > 10 * 60
 
+    async def _api_search_candidates(self, query: str, limit: int = 20) -> list[dict]:
+        """Fast candidate search through the configured Ritesh API."""
+        if not query or not RITESH_API_KEY:
+            return []
+        try:
+            client = await self.get_client()
+            params = {"query": query, "limit": limit, "api_key": RITESH_API_KEY}
+            async with client.get(f"{RITESH_API_URL}/search", params=params) as resp:
+                if resp.status != 200:
+                    return []
+                payload = await resp.json(content_type=None)
+                items = payload.get("result") or payload.get("results") or payload.get("data") or []
+                if isinstance(items, dict):
+                    items = items.get("result") or items.get("results") or [items]
+                return items if isinstance(items, list) else []
+        except Exception as e:
+            logger.warning(f"[Ritesh] Autoplay search failed for {query!r}: {e!r}")
+            return []
+
     async def _related_from_search(
         self, current: Track, played: set[str], played_titles: set[str],
         context_query: str | None = None,
@@ -778,13 +824,17 @@ class YouTube:
         seen_titles = set(blocked_titles)
 
         for query in queries:
-            try:
-                results = await VideosSearch(query, limit=20).next()
-            except Exception as e:
-                logger.warning(f"[Autoplay] Search failed for {query!r}: {e!r}")
-                continue
+            # Ritesh API is the fast path. py_yt is only a fallback for search.
+            result_items = await self._api_search_candidates(query, limit=20)
+            if not result_items:
+                try:
+                    results = await VideosSearch(query, limit=20).next()
+                    result_items = (results or {}).get("result", [])
+                except Exception as e:
+                    logger.warning(f"[Autoplay] Search failed for {query!r}: {e!r}")
+                    continue
 
-            for data in (results or {}).get("result", []):
+            for data in result_items:
                 eid = str(data.get("id") or "")
                 if not eid or eid in seen_ids:
                     continue
@@ -840,9 +890,6 @@ class YouTube:
         random.shuffle(candidates)
         return candidates[0]
 
-        random.shuffle(candidates)
-        return candidates[0]
-
     async def get_related(
         self,
         current: Track,
@@ -894,31 +941,3 @@ class YouTube:
 
         logger.warning(f"[Autoplay] No unique related track found for {current.id}.")
         return None
-
-        played = {str(x) for x in (played or [])}
-        played.add(str(current.id))
-        played_titles = {
-            re.sub(r"\W+", " ", str(x).lower()).strip()
-            for x in (played_titles or set())
-            if x
-        }
-        current_title = re.sub(
-            r"\W+", " ", str(current.title or "").lower()
-        ).strip()
-        if current_title:
-            played_titles.add(current_title)
-
-        related = await self._related_from_mix(current.id, played, played_titles)
-        if related:
-            return related
-
-        logger.info(
-            f"[Autoplay] Mix returned nothing for {current.id}, trying search fallback."
-        )
-        related = await self._related_from_search(current, played, played_titles)
-        if related:
-            return related
-
-        logger.warning(f"[Autoplay] No related track found for {current.id}.")
-        return None
-        
