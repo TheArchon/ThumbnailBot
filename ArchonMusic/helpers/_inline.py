@@ -104,10 +104,6 @@ class Inline:
                 keyboard.append(
                     [
                         self.ikb(
-                            text=lang["add_mee"] if lang else "Add Me",
-                            url=f"https://t.me/{app.username}?startgroup=true",
-                        ),
-                        self.ikb(
                             text="Close ✘", callback_data=f"controls close {chat_id}"
                         ),
                     ]
@@ -290,29 +286,17 @@ class Inline:
     def start_key(
         self, lang: dict, private: bool = False
     ) -> types.InlineKeyboardMarkup:
+        # Keep /start clean: no force-join/add-me button.
         rows = [
-            [
-                self.ikb(
-                    text=lang["add_me"],
-                    url=f"https://t.me/{app.username}?startgroup=true",
-                )
-            ],
             [self.ikb(text=lang["help"], callback_data="help")],
             [
                 self.ikb(text=lang["support"], url=config.SUPPORT_CHAT),
                 self.ikb(text=lang["channel"], url=config.SUPPORT_CHANNEL),
             ],
         ]
-        if private:
-            rows += [
-                [
-                    self.ikb(
-                        text="Owner",
-                        user_id=config.OWNER_ID,
-                    )
-                ]
-            ]
-        else:
+        if private and config.OWNER_ID:
+            rows += [[self.ikb(text="Owner", user_id=config.OWNER_ID)]]
+        elif not private:
             rows += [[self.ikb(text=lang["language"], callback_data="language")]]
         return self.ikm(rows)
 
