@@ -42,7 +42,7 @@ class Config:
         ]
         self.DEFAULT_THUMB = getenv("DEFAULT_THUMB", "https://files.catbox.moe/dno7wv.jpg")
         self.PING_IMG = getenv("PING_IMG", "https://files.catbox.moe/7hr8ah.jpg")
-        self.START_VIDEO = getenv("START_VIDEO", "https://d.uguu.se/RHlOgTuP.mp4")
+        self.START_VIDEO = getenv("START_VIDEO", "https://graph.org/file/2252e56532a9afedf82b0-65f2d893b4c60fe0e1.mp4")
         self.BOT_NAME = "QUEEN MUSIC"
         self.BOT_PHOTO_URL = "https://files.catbox.moe/dno7wv.jpg"
 
