@@ -464,19 +464,10 @@ class TgCall(PyTgCalls):
         # The next track is prepared in the background while the current
         # track is playing. Reuse that same preparation instead of showing
         # the old "HOLD / DOWNLOADING NEXT MEDIA" message at every transition.
-        # /skip must not wait for a slow prefetch/download. Give an
-        # already-running prefetch a tiny head-start, then cancel it and
-        # resolve the stream directly for a fast transition.
         prefetch_task = self._prefetch_tasks.get(chat_id)
         if prefetch_task and not prefetch_task.done():
             try:
-                await asyncio.wait_for(asyncio.shield(prefetch_task), timeout=0.35)
-            except asyncio.TimeoutError:
-                prefetch_task.cancel()
-                try:
-                    await prefetch_task
-                except BaseException:
-                    pass
+                await prefetch_task
             except asyncio.CancelledError:
                 raise
             except Exception as e:

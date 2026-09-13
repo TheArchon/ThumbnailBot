@@ -10,13 +10,9 @@ from py_yt import VideosSearch, Playlist
 from ArchonMusic import logger, config
 from ArchonMusic.helpers import Track, utils
 
-# Primary media API
-SHRUTI_API_URL = os.environ.get("SHRUTI_API_URL", "https://shrutibots.site").rstrip("/")
-SHRUTI_API_KEY = os.environ.get("SHRUTI_API_KEY", "")
+API_URL = os.environ.get("SHRUTI_API_URL", "https://api.shrutibots.site")
 
-# Secondary/fallback media API
-RITESH_API_URL = os.environ.get("API_URL", "https://web.riteshyt.in").rstrip("/")
-RITESH_API_KEY = os.environ.get("API_KEY", "")
+API_KEY = os.environ.get("SHRUTI_API_KEY", "ShrutiBotsfhGT4c09sFRRuQIB6yCG") ## Get This API KEY FROM TELEGRAM BOT USERNAME: @SHRUTIAPIBOT
 
 DOWNLOAD_DIR = "downloads"
 
@@ -33,171 +29,72 @@ def _youtube_video_id(value: str) -> str | None:
     return None
 
 
-async def _http_download(url: str, file_path: str, timeout: int) -> str | None:
+async def download_song(link: str) -> str:
+    video_id = _youtube_video_id(link)
+    if not video_id or len(video_id) < 3:
+        return None
+
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp3")
+    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+        return file_path
+
     try:
-        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout, connect=15)) as session:
-            async with session.get(url) as resp:
-                if resp.status not in (200, 206):
-                    logger.warning(f"[Download] HTTP {resp.status} from {url.split('?')[0]}")
-                    return None
-                ctype = (resp.headers.get("Content-Type") or "").lower()
-                if "application/json" in ctype or "text/html" in ctype:
-                    logger.warning(f"[Download] Non-media response from {url.split('?')[0]}")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{API_URL}/download",
+                params={"url": video_id, "type": "audio", "api_key": API_KEY},
+                timeout=aiohttp.ClientTimeout(total=300)
+            ) as resp:
+                if resp.status != 200:
                     return None
                 with open(file_path, "wb") as f:
                     async for chunk in resp.content.iter_chunked(131072):
                         f.write(chunk)
-        return file_path if os.path.exists(file_path) and os.path.getsize(file_path) > 0 else None
-    except Exception as e:
-        logger.warning(f"[Download] request failed: {e}")
-        try:
-            if os.path.exists(file_path):
+        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+            return file_path
+        return None
+    except Exception:
+        if os.path.exists(file_path):
+            try:
                 os.remove(file_path)
-        except Exception:
-            pass
+            except Exception:
+                pass
         return None
 
 
-async def _shruti_download(video_id: str, video: bool = False) -> str | None:
-    if not SHRUTI_API_KEY:
-        logger.warning("[Shruti] SHRUTI_API_KEY is not configured")
+async def download_video(link: str) -> str:
+    video_id = _youtube_video_id(link)
+    if not video_id or len(video_id) < 3:
         return None
-    ext = "mp4" if video else "m4a"
-    path = os.path.join(DOWNLOAD_DIR, f"{video_id}.{ext}")
-    if os.path.exists(path) and os.path.getsize(path) > 0:
-        return path
-    endpoint = f"{SHRUTI_API_URL}/download"
-    params = {
-        "url": f"https://www.youtube.com/watch?v={video_id}",
-        "type": "video" if video else "audio",
-        "api_key": SHRUTI_API_KEY,
-    }
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600, connect=15)) as session:
-            async with session.get(endpoint, params=params) as resp:
-                if resp.status not in (200, 206):
-                    logger.warning(f"[Shruti] HTTP {resp.status}")
-                    return None
-                ctype = (resp.headers.get("Content-Type") or "").lower()
-                if "application/json" in ctype or "text/" in ctype:
-                    logger.warning("[Shruti] API returned an error response")
-                    return None
-                os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-                with open(path, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(131072):
-                        f.write(chunk)
-        if os.path.exists(path) and os.path.getsize(path) > 0:
-            logger.info(f"[Shruti] Download successful: {video_id}")
-            return path
-    except Exception as e:
-        logger.warning(f"[Shruti] Download failed: {e}")
-    try:
-        if os.path.exists(path):
-            os.remove(path)
-    except Exception:
-        pass
-    return None
 
-
-async def _ritesh_download(video_id: str, video: bool = False) -> str | None:
-    """Secondary server-side download fallback."""
-    if not RITESH_API_KEY:
-        logger.warning("[Ritesh] API_KEY is not configured")
-        return None
-    ext = "mp4" if video else "mp3"
-    path = os.path.join(DOWNLOAD_DIR, f"{video_id}.{ext}")
-    if os.path.exists(path) and os.path.getsize(path) > 0:
-        return path
-    endpoint = f"{RITESH_API_URL}/download"
-    params = {
-        "url": video_id,
-        "type": "video" if video else "audio",
-        "api_key": RITESH_API_KEY,
-    }
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600, connect=15)) as session:
-            async with session.get(endpoint, params=params) as resp:
-                if resp.status not in (200, 206):
-                    logger.warning(f"[Ritesh] HTTP {resp.status}")
-                    return None
-                ctype = (resp.headers.get("Content-Type") or "").lower()
-                if "application/json" in ctype or "text/" in ctype:
-                    logger.warning("[Ritesh] API returned an error response")
-                    return None
-                os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-                with open(path, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(131072):
-                        f.write(chunk)
-        if os.path.exists(path) and os.path.getsize(path) > 0:
-            logger.info(f"[Ritesh] Download successful: {video_id}")
-            return path
-    except Exception as e:
-        logger.warning(f"[Ritesh] Download failed: {e}")
-    try:
-        if os.path.exists(path):
-            os.remove(path)
-    except Exception:
-        pass
-    return None
-
-
-async def _ytdlp_download(video_id: str, video: bool = False) -> str | None:
-    url = f"https://www.youtube.com/watch?v={video_id}"
-    ext = "mp4" if video else "mp3"
-    out = os.path.join(DOWNLOAD_DIR, f"{video_id}.{ext}")
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    opts = {
-        "quiet": True, "no_warnings": True, "noplaylist": True,
-        "outtmpl": out, "retries": 2, "socket_timeout": 20,
-        "geo_bypass": True,
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" if video else "bestaudio/best",
-        "merge_output_format": "mp4" if video else None,
-        "postprocessors": [] if video else [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}],
-    }
-    opts = {k: v for k, v in opts.items() if v is not None}
+    file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp4")
+    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+        return file_path
+
     try:
-        cookie = None
-        cookie_dir = "AloneX/cookies"
-        if os.path.exists(cookie_dir):
-            files = [f for f in os.listdir(cookie_dir) if f.endswith(".txt")]
-            if files:
-                cookie = os.path.join(cookie_dir, random.choice(files))
-        if cookie:
-            opts["cookiefile"] = cookie
-        def extract():
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([url])
-        await asyncio.get_running_loop().run_in_executor(None, extract)
-        if os.path.exists(out) and os.path.getsize(out) > 0:
-            return out
-        if not video:
-            mp3 = os.path.splitext(out)[0] + ".mp3"
-            if os.path.exists(mp3) and os.path.getsize(mp3) > 0:
-                return mp3
-    except Exception as e:
-        logger.warning(f"[yt-dlp] Download failed: {e}")
-    return None
-
-
-async def download_song(link: str) -> str | None:
-    video_id = _youtube_video_id(link)
-    if not video_id:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{API_URL}/download",
+                params={"url": video_id, "type": "video", "api_key": API_KEY},
+                timeout=aiohttp.ClientTimeout(total=600)
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                with open(file_path, "wb") as f:
+                    async for chunk in resp.content.iter_chunked(131072):
+                        f.write(chunk)
+        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+            return file_path
         return None
-    # Priority: Shruti -> Ritesh -> yt-dlp
-    return (await _shruti_download(video_id, False)
-            or await _ritesh_download(video_id, False)
-            or await _ytdlp_download(video_id, False))
-
-
-async def download_video(link: str) -> str | None:
-    video_id = _youtube_video_id(link)
-    if not video_id:
+    except Exception:
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
         return None
-    # Priority: Shruti -> Ritesh -> yt-dlp
-    return (await _shruti_download(video_id, True)
-            or await _ritesh_download(video_id, True)
-            or await _ytdlp_download(video_id, True))
 
 
 class YouTube:
@@ -214,14 +111,6 @@ class YouTube:
         )
         self.cookie_dir = "AloneX/cookies"
 
-    async def get_client(self):
-        client = getattr(self, "_client", None)
-        if client is None or client.closed:
-            self._client = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=600, connect=15)
-            )
-        return self._client
-
     def get_cookies(self):
         if not os.path.exists(self.cookie_dir):
             return None
@@ -232,7 +121,8 @@ class YouTube:
 
     async def save_cookies(self, urls: list[str]) -> None:
         logger.info("Saving cookies from urls...")
-        os.makedirs(self.cookie_dir, exist_ok=True)
+        if not os.path.exists(self.cookie_dir):
+            os.makedirs(self.cookie_dir)
         async with aiohttp.ClientSession() as session:
             for i, url in enumerate(urls):
                 path = f"{self.cookie_dir}/cookie_{i}.txt"
@@ -244,143 +134,138 @@ class YouTube:
         logger.info(f"Cookies saved in {self.cookie_dir}.")
 
     def valid(self, url: str) -> bool:
-        return bool(url and re.match(self.regex, str(url)))
+        if not url:
+            return False
+        return bool(re.match(self.regex, url))
 
     def invalid(self, url: str) -> bool:
+        """Compatibility helper used by the /play URL validator."""
         return not self.valid(url)
 
     async def search(self, query: str, m_id: int, video: bool = False) -> Track | None:
-        """Search YouTube metadata without making playback depend on a download API.
-
-        Shruti is the PRIMARY media provider for stream/download. Search uses
-        py_yt only because the configured Shruti API exposes media endpoints,
-        not a documented public search endpoint.
-        """
-        if not query:
-            return None
         try:
-            results = await VideosSearch(query, limit=1).next()
-            if results and results.get("result"):
+            _search = VideosSearch(query, limit=1)
+            results = await _search.next()
+            if results and results["result"]:
                 data = results["result"][0]
                 track = Track(
                     id=data.get("id"),
-                    channel_name=(data.get("channel") or {}).get("name") if isinstance(data.get("channel"), dict) else data.get("channel"),
+                    channel_name=data.get("channel", {}).get("name"),
                     duration=data.get("duration"),
                     duration_sec=utils.to_seconds(data.get("duration")) if data.get("duration") else 0,
                     message_id=m_id,
                     title=(data.get("title") or "")[:80],
-                    thumbnail=((data.get("thumbnails") or [{}])[-1].get("url") or "").split("?")[0],
-                    url=data.get("link") or data.get("url"),
-                    view_count=(data.get("viewCount") or {}).get("short") if isinstance(data.get("viewCount"), dict) else data.get("viewCount"),
+                    thumbnail=data.get("thumbnails", [{}])[-1].get("url").split("?")[0],
+                    url=data.get("link"),
+                    view_count=data.get("viewCount", {}).get("short"),
                     video=video,
                 )
-                if track.id:
+                if track.id and query:
                     self.track_context[str(track.id)] = str(query).strip()
-                    return track
+                return track
         except Exception as e:
-            logger.error(f"[YouTube] Search failed: {e}")
+            logger.error(f"Search error: {e}")
         return None
 
     async def stream_url(self, video_id: str, video: bool = False) -> str | None:
-        """Fast direct streaming: race Shruti and Ritesh, use the first working API."""
-        vid = _youtube_video_id(video_id) or str(video_id or "").strip()
-        if not vid:
+        """Resolve a direct media URL for immediate playback.
+
+        Try a few YouTube player clients because one client can fail while
+        another still exposes a playable direct URL. No full download is
+        performed here; ffmpeg/pytgcalls streams the returned URL directly.
+        """
+        if not video_id:
             return None
 
-        client = await self.get_client()
-
-        async def shruti():
-            if not SHRUTI_API_KEY:
-                return None
+        raw_id = str(video_id)
+        # The external download API already handles YouTube extraction on a
+        # server-side IP. Returning its media endpoint first avoids the
+        # YouTube anti-bot challenge seen on Heroku/cloud IPs and lets
+        # ffmpeg/pytgcalls start playback without downloading the whole file.
+        api_stream = None
+        if not video:
+            api_stream = (
+                f"{API_URL}/download?url={quote(raw_id, safe='')}"
+                f"&type=audio&api_key={quote(API_KEY, safe='')}"
+            )
             try:
-                url = f"{SHRUTI_API_URL}/stream/{vid}"
-                timeout = aiohttp.ClientTimeout(total=6, connect=3)
-                async with client.get(
-                    url,
-                    params={"api_key": SHRUTI_API_KEY},
-                    headers={"Range": "bytes=0-1"},
-                    timeout=timeout,
-                ) as resp:
-                    ctype = (resp.headers.get("Content-Type") or "").lower()
-                    if resp.status in (200, 206) and "json" not in ctype and "text/html" not in ctype:
-                        logger.info(f"[Shruti] Stream ready: {vid}")
-                        return str(resp.url)
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        api_stream, headers={"Range": "bytes=0-1"},
+                        timeout=aiohttp.ClientTimeout(total=8)
+                    ) as resp:
+                        if resp.status in (200, 206):
+                            return api_stream
+                        logger.warning(f"[YouTube] Audio API HTTP {resp.status}; using yt-dlp fallback.")
             except Exception as e:
-                logger.warning(f"[Shruti] Stream failed: {e}")
-            return None
+                logger.warning(f"[YouTube] Audio API check failed: {e}")
 
-        async def ritesh():
-            if not RITESH_API_KEY or video:
-                return None
-            try:
-                url = f"{RITESH_API_URL}/download"
-                timeout = aiohttp.ClientTimeout(total=6, connect=3)
-                async with client.get(
-                    url,
-                    params={"url": vid, "type": "audio", "api_key": RITESH_API_KEY},
-                    headers={"Range": "bytes=0-1"},
-                    allow_redirects=True,
-                    timeout=timeout,
-                ) as resp:
-                    ctype = (resp.headers.get("Content-Type") or "").lower()
-                    if resp.status in (200, 206) and "json" not in ctype and "text/html" not in ctype:
-                        logger.info(f"[Ritesh] Stream ready: {vid}")
-                        return str(resp.url)
-            except Exception as e:
-                logger.warning(f"[Ritesh] Stream failed: {e}")
-            return None
+        url = raw_id if raw_id.startswith("http") else f"{self.base}{raw_id}"
+        cookie = self.get_cookies()
 
-        # Both APIs are tried at the same time. The first valid stream wins.
-        tasks = [asyncio.create_task(shruti()), asyncio.create_task(ritesh())]
-        try:
-            pending = set(tasks)
-            while pending:
-                done, pending = await asyncio.wait(
-                    pending, return_when=asyncio.FIRST_COMPLETED
-                )
-                for task in done:
-                    result = task.result()
-                    if result:
-                        for other in pending:
-                            other.cancel()
-                        return result
-            return None
-        finally:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
+        clients = ["android", "web_safari", "web", "tv"]
+        for client in clients:
+            opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "skip_download": True,
+                "noplaylist": True,
+                "geo_bypass": True,
+                "socket_timeout": 8,
+                "retries": 1,
+                "extractor_retries": 1,
+                "format": (
+                    "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+                    if video else
+                    "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best"
+                ),
+                "extractor_args": {
+                    "youtube": {"player_client": [client]},
+                },
+            }
+            if cookie:
+                opts["cookiefile"] = cookie
 
-    async def close(self):
-        client = getattr(self, "_client", None)
-        if client and not client.closed:
-            await client.close()
-
-    async def track_from_url(self, url: str, m_id: int, video: bool = False) -> Track | None:
-        """Build track metadata for a direct YouTube URL without py_yt extraction."""
-        vid = _youtube_video_id(url)
-        if not vid:
-            return None
-        try:
-            client = await self.get_client()
-            async with client.get(
-                "https://www.youtube.com/oembed",
-                params={"url": f"https://www.youtube.com/watch?v={vid}", "format": "json"},
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json(content_type=None)
-                    title = data.get("title") or "YouTube"
-                    channel = data.get("author_name") or "YouTube"
-                    track = Track(
-                        id=vid, channel_name=channel, duration="", duration_sec=0,
-                        message_id=m_id, title=title[:80],
-                        thumbnail=data.get("thumbnail_url"),
-                        url=f"https://www.youtube.com/watch?v={vid}",
-                        view_count="", video=video,
+            def extract():
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    if not info:
+                        return None
+                    direct = info.get("url")
+                    if direct:
+                        return direct
+                    formats = info.get("formats") or []
+                    if video:
+                        candidates = [
+                            f for f in formats
+                            if f.get("url") and f.get("vcodec") not in (None, "none")
+                        ]
+                    else:
+                        candidates = [
+                            f for f in formats
+                            if f.get("url") and f.get("acodec") not in (None, "none")
+                        ]
+                    candidates.sort(
+                        key=lambda f: (
+                            float(f.get("abr") or 0),
+                            float(f.get("tbr") or 0),
+                            int(f.get("height") or 0),
+                        ),
+                        reverse=True,
                     )
-                    self.track_context[str(vid)] = title
-                    return track
-        except Exception as e:
-            logger.warning(f"[YouTube] oEmbed failed for {vid}: {e}")
+                    return candidates[0].get("url") if candidates else None
+
+            try:
+                direct = await asyncio.wait_for(
+                    asyncio.get_running_loop().run_in_executor(None, extract),
+                    timeout=12,
+                )
+                if direct:
+                    logger.info(f"[YouTube] Direct stream ready via {client}: {video_id}")
+                    return direct
+            except Exception as e:
+                logger.warning(f"[YouTube] stream client {client} failed for {video_id}: {e}")
+
         return None
 
     async def autoplay_track(
@@ -584,62 +469,49 @@ class YouTube:
 
     @staticmethod
     def _detect_language_hint(context: str = "", title: str = "", channel: str = "") -> str | None:
-        """Detect the requested music language/scene from query, title and channel."""
+        """Detect the requested music language/scene.
+
+        The original query has priority.  Candidate tracks are later checked
+        against this same language so autoplay does not silently switch from
+        Bhojpuri to Hindi, Hindi to Punjabi, etc.
+        """
         text = f"{context} {title} {channel}".lower()
 
         language_keywords = {
-            "bhojpuri": ["bhojpuri", "भोजपुरी", "pawan singh", "khesari lal", "ritesh pandey",
-                         "shilpi raj", "pramod premi", "neelkamal singh", "arvind akela kallu",
-                         "ankush raja", "gunjan singh", "rakesh mishra"],
-            "punjabi": ["punjabi", "ਪੰਜਾਬੀ", "sidhu moose wala", "sidhu moosewala",
-                       "karan aujla", "diljit dosanjh", "amrit maan", "ap dhillon", "shubh",
-                       "gippy grewal", "jazzy b", "babbu maan", "prem dhillon"],
-            "haryanvi": ["haryanvi", "haryanavi", "हरियाणवी", "sapna choudhary",
-                         "gulzaar chhaniwala", "masoom sharma", "renuka panwar", "amit dhull",
-                         "ashu twinkle"],
-            "rajasthani": ["rajasthani", "राजस्थानी", "marwadi", "मारवाड़ी", "mame khan"],
-            "marathi": ["marathi", "मराठी", "ajay atul", "swapnil bandodkar", "avdhoot gupte",
-                        "sairat"],
-            "bengali": ["bengali", "বাংলা", "bangla", "anupam roy", "nachiketa"],
-            "tamil": ["tamil", "தமிழ்", "anirudh", "ar rahman tamil", "ilaiyaraaja",
-                      "yuvan shankar raja"],
-            "telugu": ["telugu", "తెలుగు", "thaman s", "devi sri prasad", "sid sriram telugu",
-                       "allu arjun", "prabhas telugu"],
-            "kannada": ["kannada", "ಕನ್ನಡ", "raghu dixit", "vijay prakash", "arjun janya"],
-            "malayalam": ["malayalam", "മലയാളം", "vineeth sreenivasan", "shaan rahman",
-                          "sushin shyam"],
-            "odia": ["odia", "oriya", "ଓଡ଼ିଆ", "humane sagar", "satyajeet jena"],
-            "assamese": ["assamese", "অসমীয়া", "zubeen garg", "papon assamese"],
-            "gujarati": ["gujarati", "ગુજરાતી", "kinjal dave", "geeta rabari",
-                        "jignesh kaviraj", "devayat khavad", "kajal maheriya"],
-            "hindi": ["hindi", "हिंदी", "hindi song", "hindi songs", "bollywood",
-                      "bollywood song", "bollywood songs", "desi hindi"],
-            "urdu": ["urdu", "اردو", "pakistani song", "pakistani songs", "qawwali",
-                     "ghazal", "atif aslam", "ali zafar"],
-            "nepali": ["nepali", "नेपाली", "nepali song", "nepali songs", "swoopna suman",
-                       "sajjan raj vaidya"],
+            "bhojpuri": ["bhojpuri", "भोजपुरी", "bhojpuriya", "pawan singh", "khesari lal", "khesari lal yadav", "ritesh pandey", "shilpi raj", "pramod premi", "neelkamal singh", "arvind akela kallu", "ankush raja", "gunjan singh", "rajesh raja", "rakesh mishra"],
+            "punjabi": ["punjabi", "ਪੰਜਾਬੀ", "sidhu moose wala", "sidhu moosewala", "karan aujla", "diljit dosanjh", "amrit maan", "ap dhillon", "shubh", "gippy grewal", "jazzy b", "babbu maan"],
+            "haryanvi": ["haryanvi", "haryanavi", "हरियाणवी", "sapna choudhary", "gulzaar chhaniwala", "masoom sharma", "renuka panwar", "amit dhull"],
+            "rajasthani": ["rajasthani", "राजस्थानी", "marwadi", "मारवाड़ी", "rajasthani song", "rajasthani songs"],
+            "marathi": ["marathi", "मराठी", "marathi song", "marathi songs", "ajay atul", "swapnil bandodkar", "avdhoot gupte"],
+            "bengali": ["bengali", "বাংলা", "bangla", "bangla song", "bengali song", "bengali songs", "arijit singh bengali", "shreya ghoshal bengali"],
+            "tamil": ["tamil", "தமிழ்", "tamil song", "tamil songs", "anirudh", "ar rahman tamil", "vijay tamil", "ilaiyaraaja"],
+            "telugu": ["telugu", "తెలుగు", "telugu song", "telugu songs", "thaman s", "devi sri prasad", "sid sriram telugu"],
+            "kannada": ["kannada", "ಕನ್ನಡ", "kannada song", "kannada songs", "raghu dixit", "vijay prakash"],
+            "malayalam": ["malayalam", "മലയാളം", "malayalam song", "malayalam songs", "vineeth sreenivasan", "shaan rahman"],
+            "odia": ["odia", "oriya", "ଓଡ଼ିଆ", "odia song", "odia songs", "oriya song"],
+            "assamese": ["assamese", "অসমীয়া", "assamese song", "assamese songs", "zubeen garg", "papon assamese"],
+            "gujarati": ["gujarati", "ગુજરાતી", "gujarati song", "gujarati songs", "kinjal dave", "geeta rabari", "jignesh kaviraj", "devayat khavad"],
+            "hindi": ["hindi", "हिंदी", "hindi song", "hindi songs", "bollywood", "bollywood song", "bollywood songs"],
+            "urdu": ["urdu", "اردو", "urdu song", "urdu songs", "pakistani song", "pakistani songs", "qawwali"],
+            "nepali": ["nepali", "नेपाली", "nepali song", "nepali songs", "nepali music"],
             "sindhi": ["sindhi", "سنڌي", "सिंधी", "sindhi song", "sindhi songs"],
             "konkani": ["konkani", "कोंकणी", "konkani song", "konkani songs"],
             "kashmiri": ["kashmiri", "کٲشُر", "कश्मीरी", "kashmiri song", "kashmiri songs"],
             "manipuri": ["manipuri", "meitei", "মৈতৈ", "manipuri song", "manipuri songs"],
             "santali": ["santali", "ᱥᱟᱱᱛᱟᱲᱤ", "santali song", "santali songs"],
-            "english": ["english", "english song", "english songs", "american song",
-                        "british song", "pop song", "hollywood song", "taylor swift",
-                        "the weeknd", "justin bieber", "ed sheeran", "billie eilish"],
-            "spanish": ["spanish", "español", "spanish song", "spanish songs", "latin song",
-                        "reggaeton", "bad bunny", "j balvin"],
+            "english": ["english", "english song", "english songs", "american song", "british song", "pop song", "hollywood song"],
+            "spanish": ["spanish", "español", "spanish song", "spanish songs", "latin song", "reggaeton"],
             "portuguese": ["portuguese", "português", "brazilian song", "brazilian songs"],
             "french": ["french", "français", "french song", "french songs"],
             "german": ["german", "deutsch", "german song", "german songs"],
             "italian": ["italian", "italiano", "italian song", "italian songs"],
-            "korean": ["korean", "한국어", "k-pop", "kpop", "korean song", "korean songs",
-                       "bts", "blackpink", "twice", "stray kids"],
-            "japanese": ["japanese", "日本語", "j-pop", "jpop", "japanese song", "japanese songs",
-                         "yoasobi"],
+            "korean": ["korean", "한국어", "k-pop", "kpop", "korean song", "korean songs"],
+            "japanese": ["japanese", "日本語", "j-pop", "jpop", "japanese song", "japanese songs"],
             "arabic": ["arabic", "العربية", "arabic song", "arabic songs"],
             "turkish": ["turkish", "türkçe", "turkish song", "turkish songs"],
         }
 
+        # Strong, script-based signals where the writing system is unique.
         script_languages = [
             ("punjabi", r"[\u0A00-\u0A7F]"),
             ("bengali", r"[\u0980-\u09FF]"),
@@ -655,16 +527,19 @@ class YouTube:
             ("arabic", r"[\u0600-\u06FF]"),
         ]
 
-        # Explicit query/artist markers have highest priority.
+        # Explicit words/artist names beat generic script detection.
         for lang, words in language_keywords.items():
-            if any(word in text for word in words):
-                return lang.title()
+            for word in words:
+                if word in text:
+                    return lang.title()
 
         for lang, pattern in script_languages:
             if re.search(pattern, text):
                 return lang.title()
 
-        # Devanagari without a regional marker is treated as Hindi.
+        # Devanagari is shared by Hindi, Bhojpuri, Marathi, Haryanvi, Nepali,
+        # etc.; without a language marker it is intentionally treated as Hindi
+        # rather than guessing a regional language.
         if re.search(r"[\u0900-\u097F]", text):
             return "Hindi"
 
@@ -781,18 +656,8 @@ class YouTube:
                     continue
                 if self._is_compilation_or_long_mix(result_title, duration_sec):
                     continue
-                candidate_channel = (
-                    data.get("channel", {}).get("name", "")
-                    if isinstance(data.get("channel"), dict)
-                    else str(data.get("channel") or "")
-                )
-                if language_hint:
-                    candidate_language = self._detect_language_hint(
-                        title=result_title,
-                        channel=candidate_channel,
-                    )
-                    if not candidate_language or candidate_language.casefold() != language_hint.casefold():
-                        continue
+                if language_hint and not self._language_matches(language_hint, result_title, data.get("channel", {}).get("name", "")):
+                    continue
 
                 seen_ids.add(eid)
                 seen_titles.add(norm)
@@ -881,6 +746,8 @@ class YouTube:
 
         logger.warning(f"[Autoplay] No unique related track found for {current.id}.")
         return None
+
+        played = {str(x) for x in (played or [])}
         played.add(str(current.id))
         played_titles = {
             re.sub(r"\W+", " ", str(x).lower()).strip()
