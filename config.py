@@ -26,16 +26,16 @@ class Config:
         self.LOGGER_ID = int(getenv("LOGGER_ID", 0))
         self.OWNER_ID = int(getenv("OWNER_ID", 0))
 
-        self.DURATION_LIMIT = int(getenv("DURATION_LIMIT", 60)) * 60
-        self.QUEUE_LIMIT = int(getenv("QUEUE_LIMIT", 20))
-        self.PLAYLIST_LIMIT = int(getenv("PLAYLIST_LIMIT", 20))
+        self.DURATION_LIMIT = int(getenv("DURATION_LIMIT", 99999)) * 99999
+        self.QUEUE_LIMIT = int(getenv("QUEUE_LIMIT", 50))
+        self.PLAYLIST_LIMIT = int(getenv("PLAYLIST_LIMIT", 50))
 
         self.SESSION1 = getenv("SESSION", None)
         self.SESSION2 = getenv("SESSION2", None)
         self.SESSION3 = getenv("SESSION3", None)
 
-        self.SUPPORT_CHANNEL = getenv("SUPPORT_CHANNEL", "https://t.me/meowqti")
-        self.SUPPORT_CHAT = getenv("SUPPORT_CHAT", "https://t.me/Thealoneteam")
+        self.SUPPORT_CHANNEL = getenv("SUPPORT_CHANNEL", "https://t.me/ll_ROYAL_ABOUT_ll")
+        self.SUPPORT_CHAT = getenv("SUPPORT_CHAT", "https://t.me/hot_dpz_stor")
 
         self.AUTO_LEAVE: bool = getenv("AUTO_LEAVE", "False").lower() == "true"
         self.AUTO_END: bool = getenv("AUTO_END", "False").lower() == "true"
@@ -53,8 +53,8 @@ class Config:
         self.DEFAULT_THUMB = getenv(
             "DEFAULT_THUMB", "https://te.legra.ph/file/3e40a408286d4eda24191.jpg"
         )
-        self.PING_IMG = getenv("PING_IMG", "https://files.catbox.moe/haagg2.png")
-        self.START_IMG = getenv("START_IMG", "https://files.catbox.moe/zvziwk.jpg")
+        self.PING_IMG = getenv("PING_IMG", "https://files.catbox.moe/dno7wv.jpg")
+        self.START_IMG = getenv("START_IMG", "https://files.catbox.moe/dno7wv.jpg")
 
     def check(self):
         missing = [
