@@ -38,6 +38,51 @@ API_URL = RITESH_API_URL
 API_KEY = RITESH_API_KEY
 
 
+# Autoplay safety filters. These are intentionally conservative: items that
+# look like episodes, podcasts, trailers, interviews, mixes, or other
+# non-song content are rejected before they enter the queue.
+_NON_SONG_WORDS = {
+    "episode", "ep", "podcast", "interview", "trailer", "teaser",
+    "web series", "webseries", "serial", "full episode", "chapter",
+    "documentary", "news", "live stream", "livestream", "radio",
+    "talk show", "talkshow", "review", "reaction", "behind the scenes",
+    "making of", "karaoke", "instrumental", "lofi mix", "nonstop mix",
+    "jukebox", "playlist", "compilation", "medley", "remix mix",
+}
+
+_LANGUAGE_MARKERS = {
+    "hindi": ["hindi", "हिंदी", "bollywood", "hindi movie", "hindi song", "hindustani"],
+    "bhojpuri": ["bhojpuri", "भोजपुरी"],
+    "punjabi": ["punjabi", "ਪੰਜਾਬੀ"],
+    "tamil": ["tamil", "தமிழ்"],
+    "telugu": ["telugu", "తెలుగు"],
+    "marathi": ["marathi", "मराठी"],
+    "bengali": ["bengali", "bangla", "বাংলা"],
+    "gujarati": ["gujarati", "ગુજરાતી"],
+    "kannada": ["kannada", "ಕನ್ನಡ"],
+    "malayalam": ["malayalam", "മലയാളം"],
+    "odia": ["odia", "oriya", "ଓଡ଼ିଆ"],
+    "assamese": ["assamese", "অসমীয়া"],
+}
+
+# Common artist/channel hints. Metadata is preferred; these are only a fallback
+# when the provider does not expose a language field.
+_ARTIST_LANGUAGE = {
+    "pawan singh": "bhojpuri", "khesari lal yadav": "bhojpuri",
+    "shilpi raj": "bhojpuri", "neelkamal singh": "bhojpuri",
+    "bohemia": "punjabi", "diljit dosanjh": "punjabi",
+    "karan aujla": "punjabi", "ap dhillon": "punjabi",
+    "sidhu moose wala": "punjabi", "guru randhawa": "punjabi",
+    "arijit singh": "hindi", "atif aslam": "hindi",
+    "shreya ghoshal": "hindi", "sonu nigam": "hindi",
+    "jubin nautiyal": "hindi", "t-series": "hindi",
+    "a.r. rahman": "tamil", "ar rahman": "tamil",
+    "anirudh": "tamil", "thaman s": "telugu",
+    "devi sri prasad": "telugu", "udit narayan": "hindi",
+}
+
+
+
 async def download_assistant(query: str, dl_type: str) -> str:
     """Helper to get stream URL from the API"""
     safe_query = urllib.parse.quote(query)
@@ -140,6 +185,13 @@ class YouTube:
             link = link.split("&si=")[0]
         return link
 
+    def _make_context(self, original_query: str, track: Track, data=None) -> str:
+        meta = data if isinstance(data, dict) else {}
+        language = self._result_language(meta, track.title or "", track.channel_name or "")
+        requested = self._language_hint(original_query)
+        lock = requested or language
+        return f"{lock or 'auto'} | {original_query} | {track.title or ''} | {track.channel_name or ''}"
+
     async def search(self, query: str, m_id: int, video: bool = False) -> Track | None:
         """Search YouTube with Shruti first, then Ritesh, then py_yt."""
         if not query:
@@ -155,7 +207,7 @@ class YouTube:
         ):
             if not base:
                 continue
-            params = {"query": original_query, "limit": 1}
+            params = {"query": original_query, "limit": 8}
             if key:
                 params["api_key"] = key
             try:
@@ -185,46 +237,51 @@ class YouTube:
                     if not isinstance(result, list) or not result:
                         continue
 
-                    data = result[0] or {}
-                    vid = data.get("id") or data.get("videoId")
-                    if not vid:
-                        continue
+                    for data in result:
+                        if not isinstance(data, dict):
+                            continue
+                        vid = data.get("id") or data.get("videoId")
+                        if not vid:
+                            continue
 
-                    channel = data.get("channel") or {}
-                    if isinstance(channel, dict):
-                        channel = channel.get("name") or ""
-                    thumbs = data.get("thumbnails") or []
-                    thumb = ""
-                    if isinstance(thumbs, list) and thumbs:
-                        last = thumbs[-1]
-                        thumb = (
-                            last.get("url", "")
-                            if isinstance(last, dict)
-                            else str(last)
+                        channel = data.get("channel") or {}
+                        if isinstance(channel, dict):
+                            channel = channel.get("name") or ""
+                        title_value = str(data.get("title") or "Unknown")
+                        if not self._is_song_result(data, title_value, str(channel)):
+                            continue
+                        thumbs = data.get("thumbnails") or []
+                        thumb = ""
+                        if isinstance(thumbs, list) and thumbs:
+                            last = thumbs[-1]
+                            thumb = (
+                                last.get("url", "")
+                                if isinstance(last, dict)
+                                else str(last)
+                            )
+
+                        track = Track(
+                            id=str(vid),
+                            channel_name=channel,
+                            duration=data.get("duration"),
+                            duration_sec=utils.to_seconds(
+                                data.get("duration") or "00:00"
+                            ),
+                            message_id=m_id,
+                            title=str(data.get("title") or "Unknown")[:25],
+                            thumbnail=thumb.split("?")[0],
+                            url=data.get("link")
+                            or data.get("url")
+                            or f"{self.base}{vid}",
+                            view_count=(
+                                data.get("viewCount", {}).get("short")
+                                if isinstance(data.get("viewCount"), dict)
+                                else data.get("viewCount", "")
+                            ),
+                            video=video,
                         )
-
-                    track = Track(
-                        id=str(vid),
-                        channel_name=channel,
-                        duration=data.get("duration"),
-                        duration_sec=utils.to_seconds(
-                            data.get("duration") or "00:00"
-                        ),
-                        message_id=m_id,
-                        title=str(data.get("title") or "Unknown")[:25],
-                        thumbnail=thumb.split("?")[0],
-                        url=data.get("link")
-                        or data.get("url")
-                        or f"{self.base}{vid}",
-                        view_count=(
-                            data.get("viewCount", {}).get("short")
-                            if isinstance(data.get("viewCount"), dict)
-                            else data.get("viewCount", "")
-                        ),
-                        video=video,
-                    )
-                    self.track_context[str(track.id)] = f"{original_query} | {track.title} | {track.channel_name}"
-                    return track
+                        self.track_context[str(track.id)] = self._make_context(original_query, track, data)
+                        return track
             except Exception as e:
                 logger.warning(f"[{provider}] Search failed: {e}")
 
@@ -237,7 +294,7 @@ class YouTube:
                 track = self._track_from_data(data, video=video)
                 if track:
                     track.message_id = m_id
-                    self.track_context[str(track.id)] = f"{original_query} | {track.title} | {track.channel_name}"
+                    self.track_context[str(track.id)] = self._make_context(original_query, track, data)
                     return track
         except Exception as e:
             logger.warning(f"[py_yt] Search fallback failed: {e}")
@@ -352,43 +409,55 @@ class YouTube:
         return False
 
     def _language_hint(self, text: str) -> str | None:
-        """Detect the requested Indian language from query/title/channel text."""
-        t = (text or "").lower()
-        markers = {
-            "bhojpuri": ["bhojpuri", "भोजपुरी"],
-            "punjabi": ["punjabi", "ਪੰਜਾਬੀ", "punjabi song", "punjabi songs"],
-            "tamil": ["tamil", "தமிழ்"],
-            "telugu": ["telugu", "తెలుగు"],
-            "marathi": ["marathi", "मराठी"],
-            "bengali": ["bengali", "bangla", "বাংলা"],
-            "gujarati": ["gujarati", "ગુજરાતી"],
-            "kannada": ["kannada", "ಕನ್ನಡ"],
-            "malayalam": ["malayalam", "മലയാളം"],
-            "odia": ["odia", "oriya", "ଓଡ଼ିଆ"],
-            "assamese": ["assamese", "অসমীয়া"],
-            "hindi": ["hindi", "हिंदी", "bollywood", "hindi movie", "hindi movies", "hindi song", "hindi songs", "hindustani"],
-        }
-        for lang, words in markers.items():
+        """Detect an Indian-language lock from query/result metadata."""
+        t = str(text or "").lower()
+        for lang, words in _LANGUAGE_MARKERS.items():
             if any(w in t for w in words):
                 return lang
+        for artist, lang in _ARTIST_LANGUAGE.items():
+            if artist in t:
+                return lang
 
-        # Script-based detection is useful when the user types the song name
-        # in an Indian script instead of writing the language name.
+        # Script-based detection.
         if re.search(r"[\u0A00-\u0A7F]", text or ""):
             return "punjabi"
         if re.search(r"[\u0B80-\u0BFF]", text or ""):
             return "tamil"
         if re.search(r"[\u0C00-\u0C7F]", text or ""):
             return "telugu"
-        if re.search(r"[\u0900-\u097F]", text or ""):
-            return "hindi"
-        if re.search(r"[\u0B00-\u0B7F]", text or ""):
-            return "bengali" if re.search(r"[\u0980-\u09FF]", text or "") else "odia"
         if re.search(r"[\u0C80-\u0CFF]", text or ""):
             return "kannada"
         if re.search(r"[\u0D00-\u0D7F]", text or ""):
             return "malayalam"
+        if re.search(r"[\u0980-\u09FF]", text or ""):
+            return "bengali"
+        if re.search(r"[\u0B00-\u0B7F]", text or ""):
+            return "odia"
+        if re.search(r"[\u0900-\u097F]", text or ""):
+            return "hindi"
         return None
+
+    def _is_song_result(self, data, title: str = "", channel: str = "") -> bool:
+        """Reject obvious non-song content from search/autoplay results."""
+        fields = [title, channel]
+        for key in ("category", "genre", "type", "content_type", "description", "tags"):
+            value = data.get(key) if isinstance(data, dict) else None
+            if isinstance(value, list):
+                fields.extend(str(x) for x in value)
+            elif value:
+                fields.append(str(value))
+        text = " ".join(fields).lower()
+        return not any(word in text for word in _NON_SONG_WORDS)
+
+    def _result_language(self, data, title: str = "", channel: str = "") -> str | None:
+        if isinstance(data, dict):
+            for key in ("language", "lang", "language_code", "audio_language"):
+                value = data.get(key)
+                if value:
+                    detected = self._language_hint(str(value))
+                    if detected:
+                        return detected
+        return self._language_hint(f"{title} {channel}")
 
     def _language_query(self, context: str, hint: str | None) -> list[str]:
         """Build focused searches so autoplay does not fall into a global mix."""
@@ -418,15 +487,13 @@ class YouTube:
         queries.extend(labels.get(hint, [f"{hint} songs"]))
         return list(dict.fromkeys(q.strip() for q in queries if q.strip()))
 
-    def _same_language(self, title: str, channel: str, hint: str | None) -> bool:
+    def _same_language(self, data, title: str, channel: str, hint: str | None) -> bool:
         if not hint:
             return True
-        detected = self._language_hint(f"{title} {channel}")
-        if detected is None:
-            # API metadata can be language-neutral. The query itself is already
-            # language constrained, so allow it instead of losing autoplay.
-            return True
-        return detected == hint
+        detected = self._result_language(data, title, channel)
+        # Unknown metadata is allowed only when the search query itself was
+        # explicitly language-scoped. The caller handles that lock.
+        return detected in (None, hint)
 
     async def _api_search(self, base: str, key: str, query: str, limit: int = 8):
         client = await self.get_client()
@@ -445,6 +512,8 @@ class YouTube:
             return []
 
     def _track_from_data(self, data, video=False):
+        if not isinstance(data, dict):
+            return None
         vid = data.get("id") or data.get("videoId")
         if not vid:
             return None
@@ -457,6 +526,8 @@ class YouTube:
         channel = data.get("channel") or {}
         if isinstance(channel, dict):
             channel = channel.get("name", "")
+        if not self._is_song_result(data, str(title), str(channel)):
+            return None
         return Track(
             id=str(vid), channel_name=channel or "", duration=data.get("duration"),
             duration_sec=utils.to_seconds(data.get("duration") or "00:00"),
@@ -473,7 +544,8 @@ class YouTube:
         etc., instead of falling into YouTube's mixed recommendations.
         """
         context = getattr(self, "track_context", {}).get(str(video_id), "")
-        hint = self._language_hint(context)
+        parts = [p.strip() for p in context.split(" | ")] if context else []
+        hint = parts[0] if parts and parts[0] in _LANGUAGE_MARKERS else self._language_hint(context)
         queries = self._language_query(context, hint)
         candidates = []
         seen = {str(video_id)}
@@ -491,7 +563,10 @@ class YouTube:
                         continue
                     if max_duration and tr.duration_sec > max_duration:
                         continue
-                    if not self._same_language(tr.title or "", tr.channel_name or "", hint):
+                    if not self._same_language(data, tr.title or "", tr.channel_name or "", hint):
+                        continue
+                    detected = self._result_language(data, tr.title or "", tr.channel_name or "")
+                    if hint and detected and detected != hint:
                         continue
                     seen.add(str(tr.id))
                     candidates.append(tr)
@@ -514,7 +589,10 @@ class YouTube:
                             continue
                         if max_duration and tr.duration_sec > max_duration:
                             continue
-                        if not self._same_language(tr.title or "", tr.channel_name or "", hint):
+                        if not self._same_language(data, tr.title or "", tr.channel_name or "", hint):
+                            continue
+                        detected = self._result_language(data, tr.title or "", tr.channel_name or "")
+                        if hint and detected and detected != hint:
                             continue
                         seen.add(str(tr.id))
                         candidates.append(tr)
@@ -528,11 +606,11 @@ class YouTube:
         if candidates:
             selected = random.choice(candidates)
             # Critical: propagate the language context to the NEXT autoplay hop.
-            selected_context = context or ""
-            if hint:
-                selected_context = f"{hint} | {selected.title} | {selected.channel_name}"
-            else:
-                selected_context = f"{selected.title} | {selected.channel_name}"
+            selected_context = (
+                f"{hint} | {selected.title} | {selected.channel_name}"
+                if hint
+                else f"auto | {selected.title} | {selected.channel_name}"
+            )
             self.track_context[str(selected.id)] = selected_context
             logger.info(
                 f"[Autoplay] Selected {selected.title!r} language={hint or 'auto'}"

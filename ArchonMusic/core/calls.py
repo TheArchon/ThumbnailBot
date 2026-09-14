@@ -70,7 +70,7 @@ class TgCall(PyTgCalls):
 
                 remaining = media.duration_sec - played_sec
 
-                if remaining <= 15:
+                if remaining <= 45:
                     next_media = queue.get_next(chat_id, check=True)
                     if not next_media and await db.get_autoplay(chat_id):
                         if isinstance(media, Track):
@@ -121,6 +121,7 @@ class TgCall(PyTgCalls):
         message: Message,
         media: Media | Track,
         seek_time: int = 0,
+        update_message: bool = True,
     ) -> None:
         if task := self.prefetch_tasks.pop(chat_id, None):
             task.cancel()
@@ -142,7 +143,8 @@ class TgCall(PyTgCalls):
         )
 
         if not media.file_path:
-            await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
+            if message is not None:
+                await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
             return await self.play_next(chat_id)
 
         ffmpeg_params = (
@@ -176,58 +178,63 @@ class TgCall(PyTgCalls):
             else:
                 media.time = 1
                 await db.add_call(chat_id)
-                text = _lang["play_media"].format(
-                    media.url,
-                    media.title,
-                    media.duration,
-                    media.user,
-                )
-                keyboard = buttons.controls(chat_id, lang=_lang)
-                try:
-                    if _thumb:
-                        await message.edit_media(
-                            media=InputMediaPhoto(
-                                media=_thumb,
-                                caption=text,
-                            ),
-                            reply_markup=keyboard,
-                        )
-                    else:
-                        await message.edit_text(text, reply_markup=keyboard)
-                except Exception:
+                if update_message and message is not None:
+                    text = _lang["play_media"].format(
+                        media.url,
+                        media.title,
+                        media.duration,
+                        media.user,
+                    )
+                    keyboard = buttons.controls(chat_id, lang=_lang)
                     try:
-                        await message.delete()
+                        if _thumb:
+                            await message.edit_media(
+                                media=InputMediaPhoto(
+                                    media=_thumb,
+                                    caption=text,
+                                ),
+                                reply_markup=keyboard,
+                            )
+                        else:
+                            await message.edit_text(text, reply_markup=keyboard)
                     except Exception:
-                        pass
-                    if _thumb:
-                        sent = await app.send_photo(
-                            chat_id=chat_id,
-                            photo=_thumb,
-                            caption=text,
-                            reply_markup=keyboard,
-                        )
-                    else:
-                        sent = await app.send_message(
-                            chat_id=chat_id,
-                            text=text,
-                            reply_markup=keyboard,
-                        )
-                    media.message_id = sent.id
+                        try:
+                            await message.delete()
+                        except Exception:
+                            pass
+                        if _thumb:
+                            sent = await app.send_photo(
+                                chat_id=chat_id,
+                                photo=_thumb,
+                                caption=text,
+                                reply_markup=keyboard,
+                            )
+                        else:
+                            sent = await app.send_message(
+                                chat_id=chat_id,
+                                text=text,
+                                reply_markup=keyboard,
+                            )
+                        media.message_id = sent.id
 
             self.prefetch_tasks[chat_id] = asyncio.create_task(
                 self._prepare_next(chat_id)
             )
         except FileNotFoundError:
-            await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
+            if message is not None:
+                await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
             await self.play_next(chat_id)
         except exceptions.NoActiveGroupCall:
             await self.stop(chat_id)
-            await message.edit_text(_lang["error_no_call"])
+            if message is not None:
+                await message.edit_text(_lang["error_no_call"])
         except exceptions.NoAudioSourceFound:
-            await message.edit_text(_lang["error_no_audio"])
+            if message is not None:
+                await message.edit_text(_lang["error_no_audio"])
             await self.play_next(chat_id)
         except (asyncio.TimeoutError, TimeoutError):
-            await message.edit_text(_lang["error_tg_server"])
+            if message is not None:
+                await message.edit_text(_lang["error_tg_server"])
             await self.play_next(chat_id)
         except (ConnectionError, ConnectionNotFound, TelegramServerError):
             await self.stop(chat_id)
@@ -271,128 +278,65 @@ class TgCall(PyTgCalls):
                 await asyncio.sleep(0.5)
         return None
 
-    async def _play_autoplay_silent(self, chat_id: int, media: Media | Track) -> None:
-        """Play an autoplay track without sending/editing any Telegram message."""
-        if not media.file_path:
-            media.file_path = await yt.download(media.id, video=media.video)
-        if not media.file_path:
-            logger.warning(f"[Autoplay] silent playback download failed for {media.id}")
-            return await self.stop(chat_id)
-
-        client = await db.get_assistant(chat_id)
-        ffmpeg_params = "-re " + ("-vn" if not media.video else "")
-        stream = types.MediaStream(
-            media_path=media.file_path,
-            audio_parameters=types.AudioQuality.HIGH,
-            video_parameters=types.VideoQuality.HD_720p,
-            audio_flags=types.MediaStream.Flags.REQUIRED,
-            video_flags=(
-                types.MediaStream.Flags.AUTO_DETECT
-                if media.video
-                else types.MediaStream.Flags.IGNORE
-            ),
-            ffmpeg_parameters=ffmpeg_params.strip() or None,
-        )
-        await client.play(chat_id, stream)
-        media.played_at = time.time()
-        media.time = 1
-        await db.add_call(chat_id)
-        self.prefetch_tasks[chat_id] = asyncio.create_task(self._prepare_next(chat_id))
-
-
     async def play_next(self, chat_id: int, skip_user: str | None = None) -> None:
+        """Advance the queue; autoplay is completely silent."""
         if loop := await db.get_loop(chat_id):
             await db.set_loop(chat_id, loop - 1)
             return await self.replay(chat_id)
 
         _lang = await lang.get_lang(chat_id)
         current = queue.get_current(chat_id)
+        # Keep the current player message for silent autoplay so no extra
+        # Telegram reply is created. It can be edited by play_media().
+        current_message = None
         if current and current.message_id:
             try:
-                await app.delete_messages(chat_id, current.message_id)
+                current_message = await app.get_messages(chat_id, current.message_id)
             except Exception:
-                pass
+                current_message = None
 
         media = queue.get_next(chat_id)
+        if not media and await db.get_autoplay(chat_id) and isinstance(current, Track):
+            media = await self._get_autoplay_track(current)
+            if media:
+                queue.add(chat_id, media)
+                media = queue.get_current(chat_id)
+
         if not media:
+            await self.stop(chat_id)
+            # Only normal queue-finished/skip messages are emitted when
+            # autoplay is OFF. Autoplay itself never emits a reply.
             if await db.get_autoplay(chat_id):
-                if current and isinstance(current, Track):
-                    # Autoplay must be silent: do not send an extra reply/message.
-                    # play_media() only needs a Message object for its existing UI flow.
-                    msg = current_message = None
-                    if current and current.message_id:
-                        try:
-                            current_message = await app.get_messages(chat_id, current.message_id)
-                        except Exception:
-                            current_message = None
-                    msg = current_message
+                return
+            if skip_user:
+                await app.send_message(chat_id, _lang["play_skipped"].format(skip_user))
+            return await app.send_message(chat_id, _lang["queue_finished"])
 
-                    # Set max duration for autoplay tracks based on current song
-                    # but capped at 15 minutes to avoid extremely long tracks
-                    # Use existing next item if it was pre-fetched
-                    media = queue.get_current(chat_id)
-                    if not media:
-                        media = await self._get_autoplay_track(current)
-                        if media:
-                            queue.add(chat_id, media)
+        if not media.file_path:
+            media.file_path = await yt.download(media.id, video=media.video)
+            if not media.file_path:
+                logger.warning(f"[Autoplay/Queue] Download failed for {media.id}")
+                return await self.play_next(chat_id, skip_user=skip_user)
 
-                    if media:
-                        # Re-fetch from queue in case it was just added to ensure
-                        # we have the object that might have file_path set by prefetcher
-                        media = queue.get_current(chat_id)
-
-                        if not media.file_path:
-                            media.file_path = await yt.download(
-                                media.id, video=media.video
-                            )
-                            if not media.file_path:
-                                logger.warning(f"[Autoplay] Download failed for {media.id}; trying another song")
-                                try:
-                                    await msg.edit_text("▶️ Autoplay: trying another song...")
-                                except Exception:
-                                    pass
-                                return await self.play_next(chat_id)
-
-                        if msg:
-                            media.message_id = msg.id
-                            return await self.play_media(chat_id, msg, media)
-
-                        # No message to edit; play directly without creating a reply.
-                        return await self._play_autoplay_silent(chat_id, media)
-                    else:
-                        await self.stop(chat_id)
-                        return
-                else:
-                    await self.stop(chat_id)
-                    return await app.send_message(chat_id, _lang["queue_finished"])
-            else:
-                await self.stop(chat_id)
-                if skip_user:
-                    await app.send_message(
-                        chat_id, _lang["play_skipped"].format(skip_user)
-                    )
-                return await app.send_message(chat_id, _lang["queue_finished"])
-
-        # If we reached here, media was already retrieved by queue.get_next above
+        # Normal queued playback may reuse its player message. Autoplay also
+        # reuses the existing message and never sends a new status reply.
+        if await db.get_autoplay(chat_id):
+            if current_message:
+                media.message_id = current_message.id
+                return await self.play_media(
+                    chat_id, current_message, media, update_message=True
+                )
+            # If the old player message disappeared, start silently without
+            # creating a replacement Telegram message.
+            media.message_id = 0
+            return await self.play_media(
+                chat_id, None, media, update_message=False
+            )
 
         msg = None
         if media.message_id:
             try:
                 msg = await app.get_messages(chat_id, media.message_id)
-                if not msg or not msg.id or msg.empty:
-                    msg = None
-                else:
-                    try:
-                        text = (
-                            _lang["play_skipped"].format(skip_user)
-                            + "\n\n"
-                            + _lang["play_next"]
-                            if skip_user
-                            else _lang["play_next"]
-                        )
-                        await msg.edit_text(text)
-                    except Exception:
-                        pass
             except Exception:
                 msg = None
 
@@ -403,18 +347,6 @@ class TgCall(PyTgCalls):
                 else _lang["play_next"]
             )
             msg = await app.send_message(chat_id=chat_id, text=text)
-
-        if not media.file_path:
-            media.file_path = await yt.download(media.id, video=media.video)
-            if not media.file_path:
-                if msg:
-                    try:
-                        await msg.edit_text(
-                            _lang["error_no_file"].format(config.SUPPORT_CHAT)
-                        )
-                    except Exception:
-                        pass
-                return await self.play_next(chat_id)
 
         media.message_id = msg.id
         await self.play_media(chat_id, msg, media)
