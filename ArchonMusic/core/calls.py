@@ -1,9 +1,9 @@
 #
 # Copyright (C) 2025-present by TheAloneTeam@Github, < https://github.com/TheAloneTeam >.
 #
-# This file is part of < https://github.com/TheAloneTeam/ArchonMusic > project,
+# This file is part of < https://github.com/TheAloneTeam/KartikMusic > project,
 # and is released under the "MIT License".
-# Please see < https://github.com/TheAloneTeam/ArchonMusic/blob/master/LICENSE >
+# Please see < https://github.com/TheAloneTeam/KartikMusic/blob/master/LICENSE >
 #
 # All rights reserved.
 #
@@ -22,8 +22,8 @@ from pyrogram.types import InputMediaPhoto, Message
 from pytgcalls import PyTgCalls, exceptions, types
 from pytgcalls.pytgcalls_session import PyTgCallsSession
 
-from ArchonMusic import app, config, db, lang, logger, queue, thumb, userbot, yt
-from ArchonMusic.helpers import Media, Track, buttons
+from KartikMusic import app, config, db, lang, logger, queue, thumb, userbot, yt
+from KartikMusic.helpers import Media, Track, buttons
 
 
 class TgCall(PyTgCalls):
@@ -31,9 +31,6 @@ class TgCall(PyTgCalls):
         self.clients = []
         self.restarting = defaultdict(int)
         self.prefetch_tasks = {}
-        self.autoplay_history = defaultdict(set)
-        self.autoplay_title_history = defaultdict(set)
-        self.next_locks = defaultdict(asyncio.Lock)
 
     async def pause(self, chat_id: int) -> bool:
         client = await db.get_assistant(chat_id)
@@ -73,27 +70,24 @@ class TgCall(PyTgCalls):
 
                 remaining = media.duration_sec - played_sec
 
-                if remaining <= 15:
+                if remaining <= 30:
                     next_media = queue.get_next(chat_id, check=True)
                     if not next_media and await db.get_autoplay(chat_id):
                         if isinstance(media, Track):
                             max_duration = min(int(media.duration_sec * 1.5), 900)
-                            context = f"{media.title or ''} | {media.channel_name or ''}"
                             next_media = await yt.get_related(
-                                media.id, video=media.video, max_duration=max_duration,
-                                context=context, blocked_ids=self.autoplay_history[chat_id],
-                                blocked_titles=self.autoplay_title_history[chat_id],
+                                media.id, video=media.video, max_duration=max_duration
                             )
                             if next_media:
                                 queue.add(chat_id, next_media)
 
                     if next_media and not next_media.file_path:
-                        next_media.file_path = await yt.stream_url(
+                        next_media.file_path = await yt.download(
                             next_media.id, video=next_media.video
-                        ) or await yt.download(next_media.id, video=next_media.video)
+                        )
                     break
 
-                await asyncio.sleep(5)
+                await asyncio.sleep(3)
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -113,8 +107,6 @@ class TgCall(PyTgCalls):
             except Exception:
                 pass
         queue.clear(chat_id)
-        self.autoplay_history.pop(chat_id, None)
-        self.autoplay_title_history.pop(chat_id, None)
         await db.remove_call(chat_id)
         await db.set_loop(chat_id, 0)
 
@@ -263,14 +255,6 @@ class TgCall(PyTgCalls):
         await self.play_media(chat_id, msg, media)
 
     async def play_next(self, chat_id: int, skip_user: str | None = None) -> None:
-        lock = self.next_locks[chat_id]
-        if lock.locked():
-            logger.info(f"play_next already running for {chat_id}; ignoring duplicate advance")
-            return
-        async with lock:
-            await self._play_next(chat_id, skip_user)
-
-    async def _play_next(self, chat_id: int, skip_user: str | None = None) -> None:
         if loop := await db.get_loop(chat_id):
             await db.set_loop(chat_id, loop - 1)
             return await self.replay(chat_id)
@@ -283,66 +267,111 @@ class TgCall(PyTgCalls):
             except Exception:
                 pass
 
-        if current and isinstance(current, Track) and current.id:
-            self.autoplay_history[chat_id].add(current.id)
-            if current.title:
-                self.autoplay_title_history[chat_id].add(current.title)
-
         media = queue.get_next(chat_id)
-        if not media and await db.get_autoplay(chat_id) and isinstance(current, Track):
-            max_duration = min(int((current.duration_sec or 600) * 1.5), 900)
-            context = f"{current.title or ''} | {current.channel_name or ''}"
-            media = await yt.get_related(
-                current.id,
-                video=current.video,
-                max_duration=max_duration,
-                context=context,
-                blocked_ids=self.autoplay_history[chat_id],
-                blocked_titles=self.autoplay_title_history[chat_id],
-            )
-            if media:
-                self.autoplay_history[chat_id].add(media.id)
-                if media.title:
-                    self.autoplay_title_history[chat_id].add(media.title)
-                queue.add(chat_id, media)
-                media = queue.get_current(chat_id)
-
         if not media:
-            await self.stop(chat_id)
-            if not await db.get_autoplay(chat_id) and skip_user:
-                try:
-                    await app.send_message(chat_id, _lang["play_skipped"].format(skip_user))
-                except Exception:
-                    pass
-            return
+            if await db.get_autoplay(chat_id):
+                if current and isinstance(current, Track):
+                    msg = None
+                    if skip_user:
+                        msg = await app.send_message(
+                            chat_id, _lang["autoplay_skip"].format(skip_user)
+                        )
+                    else:
+                        msg = await app.send_message(chat_id, _lang["autoplay_next"])
 
-        # Autoplay is silent: reuse the existing player message when possible.
+                    # Set max duration for autoplay tracks based on current song
+                    # but capped at 15 minutes to avoid extremely long tracks
+                    # Use existing next item if it was pre-fetched
+                    media = queue.get_current(chat_id)
+                    if not media:
+                        max_duration = min(int(current.duration_sec * 1.5), 900)
+                        media = await yt.get_related(
+                            current.id, video=current.video, max_duration=max_duration
+                        )
+                        if media:
+                            queue.add(chat_id, media)
+
+                    if media:
+                        # Re-fetch from queue in case it was just added to ensure
+                        # we have the object that might have file_path set by prefetcher
+                        media = queue.get_current(chat_id)
+
+                        if not media.file_path:
+                            media.file_path = await yt.download(
+                                media.id, video=media.video
+                            )
+                            if not media.file_path:
+                                await self.stop(chat_id)
+                                try:
+                                    return await msg.edit_text(
+                                        _lang["error_no_file"].format(
+                                            config.SUPPORT_CHAT
+                                        )
+                                    )
+                                except Exception:
+                                    pass
+                                return
+
+                        media.message_id = msg.id
+                        return await self.play_media(chat_id, msg, media)
+                    else:
+                        await self.stop(chat_id)
+                        if msg:
+                            return await msg.edit_text(_lang["queue_finished"])
+                        return await app.send_message(chat_id, _lang["queue_finished"])
+                else:
+                    await self.stop(chat_id)
+                    return await app.send_message(chat_id, _lang["queue_finished"])
+            else:
+                await self.stop(chat_id)
+                if skip_user:
+                    await app.send_message(
+                        chat_id, _lang["play_skipped"].format(skip_user)
+                    )
+                return await app.send_message(chat_id, _lang["queue_finished"])
+
+        # If we reached here, media was already retrieved by queue.get_next above
+
         msg = None
         if media.message_id:
             try:
                 msg = await app.get_messages(chat_id, media.message_id)
+                if not msg or not msg.id or msg.empty:
+                    msg = None
+                else:
+                    try:
+                        text = (
+                            _lang["play_skipped"].format(skip_user)
+                            + "\n\n"
+                            + _lang["play_next"]
+                            if skip_user
+                            else _lang["play_next"]
+                        )
+                        await msg.edit_text(text)
+                    except Exception:
+                        pass
             except Exception:
                 msg = None
 
         if not msg:
-            if current and current.message_id:
-                try:
-                    msg = await app.get_messages(chat_id, current.message_id)
-                except Exception:
-                    msg = None
-            if not msg:
-                msg = await app.send_message(chat_id, _lang["play_next"])
+            text = (
+                _lang["play_skipped"].format(skip_user) + "\n\n" + _lang["play_next"]
+                if skip_user
+                else _lang["play_next"]
+            )
+            msg = await app.send_message(chat_id=chat_id, text=text)
 
         if not media.file_path:
-            media.file_path = await yt.stream_url(media.id, video=media.video)
-        if not media.file_path:
             media.file_path = await yt.download(media.id, video=media.video)
-        if not media.file_path:
-            try:
-                await msg.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
-            except Exception:
-                pass
-            return
+            if not media.file_path:
+                if msg:
+                    try:
+                        await msg.edit_text(
+                            _lang["error_no_file"].format(config.SUPPORT_CHAT)
+                        )
+                    except Exception:
+                        pass
+                return await self.play_next(chat_id)
 
         media.message_id = msg.id
         await self.play_media(chat_id, msg, media)
