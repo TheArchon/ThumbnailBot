@@ -12,8 +12,8 @@ from typing import Any
 import aiohttp
 from py_yt import Playlist, VideosSearch
 
-from KartikMusic import logger
-from KartikMusic.helpers import Track, utils
+from ArchonMusic import logger
+from ArchonMusic.helpers import Track, utils
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +42,7 @@ class YouTube:
         self.base = "https://www.youtube.com/watch?v="
         self.cookies = []
         self.checked = False
-        self.cookie_dir = "KartikMusic/cookies"
+        self.cookie_dir = "ArchonMusic/cookies"
         self.warned = False
 
         # Prevent duplicate background prefetches.
