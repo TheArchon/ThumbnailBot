@@ -29,7 +29,7 @@ SHRUTI_API_URL = os.getenv("SHRUTI_API_URL", "https://shrutibots.site").rstrip("
 SHRUTI_API_KEY = os.getenv("SHRUTI_API_KEY", "").strip()
 
 RITESH_API_URL = os.getenv("API_URL", "https://web.riteshyt.in").rstrip("/")
-RITESH_API_KEY = os.getenv("API_KEY", "riteshfreea6901be19d3f420aad766250").strip()
+RITESH_API_KEY = os.getenv("API_KEY", "").strip()
 
 # Backward-compatible aliases used by older code in this module.
 API2_URL = SHRUTI_API_URL
@@ -223,7 +223,7 @@ class YouTube:
                         ),
                         video=video,
                     )
-                    self.track_context[str(track.id)] = original_query
+                    self.track_context[str(track.id)] = f"{original_query} | {track.title} | {track.channel_name}"
                     return track
             except Exception as e:
                 logger.warning(f"[{provider}] Search failed: {e}")
@@ -237,7 +237,7 @@ class YouTube:
                 track = self._track_from_data(data, video=video)
                 if track:
                     track.message_id = m_id
-                    self.track_context[str(track.id)] = original_query
+                    self.track_context[str(track.id)] = f"{original_query} | {track.title} | {track.channel_name}"
                     return track
         except Exception as e:
             logger.warning(f"[py_yt] Search fallback failed: {e}")
@@ -352,29 +352,80 @@ class YouTube:
         return False
 
     def _language_hint(self, text: str) -> str | None:
+        """Detect the requested Indian language from query/title/channel text."""
         t = (text or "").lower()
         markers = {
-            "bhojpuri": ["bhojpuri", "भोजपुरी"], "punjabi": ["punjabi", "ਪੰਜਾਬੀ"],
-            "tamil": ["tamil", "தமிழ்"], "telugu": ["telugu", "తెలుగు"],
-            "marathi": ["marathi", "मराठी"], "bengali": ["bengali", "বাংলা"],
-            "gujarati": ["gujarati", "ગુજરાતી"], "kannada": ["kannada", "ಕನ್ನಡ"],
-            "malayalam": ["malayalam", "മലയാളം"], "odia": ["odia", "ଓଡ଼ିଆ"],
-            "assamese": ["assamese", "অসমীয়া"], "hindi": ["hindi", "हिंदी"],
+            "bhojpuri": ["bhojpuri", "भोजपुरी"],
+            "punjabi": ["punjabi", "ਪੰਜਾਬੀ", "punjabi song", "punjabi songs"],
+            "tamil": ["tamil", "தமிழ்"],
+            "telugu": ["telugu", "తెలుగు"],
+            "marathi": ["marathi", "मराठी"],
+            "bengali": ["bengali", "bangla", "বাংলা"],
+            "gujarati": ["gujarati", "ગુજરાતી"],
+            "kannada": ["kannada", "ಕನ್ನಡ"],
+            "malayalam": ["malayalam", "മലയാളം"],
+            "odia": ["odia", "oriya", "ଓଡ଼ିଆ"],
+            "assamese": ["assamese", "অসমীয়া"],
+            "hindi": ["hindi", "हिंदी", "bollywood", "hindi movie", "hindi movies", "hindi song", "hindi songs", "hindustani"],
         }
         for lang, words in markers.items():
             if any(w in t for w in words):
                 return lang
-        # Devanagari without a stronger regional marker is treated as Hindi.
+
+        # Script-based detection is useful when the user types the song name
+        # in an Indian script instead of writing the language name.
+        if re.search(r"[\u0A00-\u0A7F]", text or ""):
+            return "punjabi"
+        if re.search(r"[\u0B80-\u0BFF]", text or ""):
+            return "tamil"
+        if re.search(r"[\u0C00-\u0C7F]", text or ""):
+            return "telugu"
         if re.search(r"[\u0900-\u097F]", text or ""):
             return "hindi"
+        if re.search(r"[\u0B00-\u0B7F]", text or ""):
+            return "bengali" if re.search(r"[\u0980-\u09FF]", text or "") else "odia"
+        if re.search(r"[\u0C80-\u0CFF]", text or ""):
+            return "kannada"
+        if re.search(r"[\u0D00-\u0D7F]", text or ""):
+            return "malayalam"
         return None
+
+    def _language_query(self, context: str, hint: str | None) -> list[str]:
+        """Build focused searches so autoplay does not fall into a global mix."""
+        base = (context or "").split(" | ")[0].strip()
+        if not hint:
+            # No language was explicitly detected: keep the original context,
+            # but do not invent a language and accidentally block a valid song.
+            return [base] if base else []
+
+        labels = {
+            "hindi": ["Hindi movie songs", "Bollywood Hindi songs"],
+            "bhojpuri": ["Bhojpuri songs", "Bhojpuri movie songs"],
+            "punjabi": ["Punjabi songs", "Punjabi movie songs"],
+            "tamil": ["Tamil songs", "Tamil movie songs"],
+            "telugu": ["Telugu songs", "Telugu movie songs"],
+            "marathi": ["Marathi songs", "Marathi movie songs"],
+            "bengali": ["Bengali songs", "Bengali movie songs"],
+            "gujarati": ["Gujarati songs", "Gujarati movie songs"],
+            "kannada": ["Kannada songs", "Kannada movie songs"],
+            "malayalam": ["Malayalam songs", "Malayalam movie songs"],
+            "odia": ["Odia songs", "Odia movie songs"],
+            "assamese": ["Assamese songs", "Assamese movie songs"],
+        }
+        queries = []
+        if base:
+            queries.append(f"{base} {hint} song")
+        queries.extend(labels.get(hint, [f"{hint} songs"]))
+        return list(dict.fromkeys(q.strip() for q in queries if q.strip()))
 
     def _same_language(self, title: str, channel: str, hint: str | None) -> bool:
         if not hint:
             return True
         detected = self._language_hint(f"{title} {channel}")
         if detected is None:
-            return True  # neutral metadata is allowed; don't kill autoplay
+            # API metadata can be language-neutral. The query itself is already
+            # language constrained, so allow it instead of losing autoplay.
+            return True
         return detected == hint
 
     async def _api_search(self, base: str, key: str, query: str, limit: int = 8):
@@ -415,31 +466,34 @@ class YouTube:
         )
 
     async def get_related(self, video_id: str, video: bool = False, max_duration: int = 0) -> Track | None:
-        """Find the next song without relying on YouTube Recommendations/RD mix.
-        Search both configured APIs and py_yt, while preserving the language of
-        the original request when it is known.
+        """Return a language-matched autoplay track.
+
+        The language context is propagated from every selected autoplay track,
+        so Hindi stays Hindi, Bhojpuri stays Bhojpuri, Punjabi stays Punjabi,
+        etc., instead of falling into YouTube's mixed recommendations.
         """
         context = getattr(self, "track_context", {}).get(str(video_id), "")
         hint = self._language_hint(context)
+        queries = self._language_query(context, hint)
         candidates = []
-        queries = []
-        if context:
-            queries += [context + " song", context]
-        queries += ["latest " + (hint or "") + " songs", (hint or "") + " songs"]
-        queries = [q.strip() for q in queries if q.strip()]
-
         seen = {str(video_id)}
+
+        # Search both APIs in the same provider order as downloads: Shruti first,
+        # then Ritesh. The query itself is language-scoped.
         for q in queries:
-            for base, key in ((SHRUTI_API_URL, SHRUTI_API_KEY), (RITESH_API_URL, RITESH_API_KEY)):
-                for data in await self._api_search(base, key, q, 8):
+            for base, key in (
+                (SHRUTI_API_URL, SHRUTI_API_KEY),
+                (RITESH_API_URL, RITESH_API_KEY),
+            ):
+                for data in await self._api_search(base, key, q, 12):
                     tr = self._track_from_data(data, video=video)
-                    if not tr or tr.id in seen or not tr.duration_sec:
+                    if not tr or str(tr.id) in seen or not tr.duration_sec:
                         continue
                     if max_duration and tr.duration_sec > max_duration:
                         continue
-                    if not self._same_language(tr.title, tr.channel_name, hint):
+                    if not self._same_language(tr.title or "", tr.channel_name or "", hint):
                         continue
-                    seen.add(tr.id)
+                    seen.add(str(tr.id))
                     candidates.append(tr)
                     if len(candidates) >= 12:
                         break
@@ -448,29 +502,47 @@ class YouTube:
             if len(candidates) >= 12:
                 break
 
-        if not candidates:
+        # py_yt is only a last-resort metadata search. Keep the same language
+        # query and filtering so it cannot introduce an unrelated language.
+        if len(candidates) < 3:
             for q in queries:
                 try:
-                    results = await VideosSearch(q, limit=8, with_live=False).next()
+                    results = await VideosSearch(q, limit=12, with_live=False).next()
                     for data in (results or {}).get("result", []):
                         tr = self._track_from_data(data, video=video)
-                        if not tr or tr.id in seen or not tr.duration_sec:
+                        if not tr or str(tr.id) in seen or not tr.duration_sec:
                             continue
                         if max_duration and tr.duration_sec > max_duration:
                             continue
-                        if not self._same_language(tr.title, tr.channel_name, hint):
+                        if not self._same_language(tr.title or "", tr.channel_name or "", hint):
                             continue
-                        seen.add(tr.id)
+                        seen.add(str(tr.id))
                         candidates.append(tr)
+                        if len(candidates) >= 12:
+                            break
                 except Exception as e:
                     logger.warning(f"py_yt autoplay search failed: {e}")
-                if candidates:
+                if len(candidates) >= 3:
                     break
 
         if candidates:
-            # Prefer a random result so autoplay doesn't repeat the same first result.
-            return random.choice(candidates)
-        logger.warning(f"[Autoplay] No candidate found for {video_id} (language={hint})")
+            selected = random.choice(candidates)
+            # Critical: propagate the language context to the NEXT autoplay hop.
+            selected_context = context or ""
+            if hint:
+                selected_context = f"{hint} | {selected.title} | {selected.channel_name}"
+            else:
+                selected_context = f"{selected.title} | {selected.channel_name}"
+            self.track_context[str(selected.id)] = selected_context
+            logger.info(
+                f"[Autoplay] Selected {selected.title!r} language={hint or 'auto'}"
+            )
+            return selected
+
+        logger.warning(
+            f"[Autoplay] No language-matched candidate for {video_id} "
+            f"(language={hint or 'auto'})"
+        )
         return None
 
     async def _download_api(
