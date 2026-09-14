@@ -29,7 +29,7 @@ SHRUTI_API_URL = os.getenv("SHRUTI_API_URL", "https://shrutibots.site").rstrip("
 SHRUTI_API_KEY = os.getenv("SHRUTI_API_KEY", "").strip()
 
 RITESH_API_URL = os.getenv("API_URL", "https://web.riteshyt.in").rstrip("/")
-RITESH_API_KEY = os.getenv("API_KEY", "riteshfreea6901be19d3f420aad766250").strip()
+RITESH_API_KEY = os.getenv("API_KEY", "").strip()
 
 # Backward-compatible aliases used by older code in this module.
 API2_URL = SHRUTI_API_URL
@@ -74,7 +74,7 @@ class YouTube:
     async def get_client(self):
         if self._client is None or self._client.closed:
             self._client = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=600.0, connect=10.0)
+                timeout=aiohttp.ClientTimeout(total=180.0, connect=6.0)
             )
         return self._client
 
@@ -160,7 +160,7 @@ class YouTube:
                 params["api_key"] = key
             try:
                 async with client.get(
-                    f"{base}/search", params=params, timeout=12
+                    f"{base}/search", params=params, timeout=8
                 ) as response:
                     if response.status != 200:
                         logger.warning(
@@ -339,7 +339,7 @@ class YouTube:
                 params["api_key"] = key
             try:
                 async with client.get(
-                    f"{base}/download", params=params, timeout=15
+                    f"{base}/download", params=params, timeout=8
                 ) as response:
                     if response.status == 200:
                         logger.info(f"[{provider}] Prefetch accepted: {vidid}")
@@ -434,7 +434,7 @@ class YouTube:
         if key:
             params["api_key"] = key
         try:
-            async with client.get(f"{base}/search", params=params, timeout=12) as r:
+            async with client.get(f"{base}/search", params=params, timeout=8) as r:
                 if r.status != 200:
                     return []
                 data = await r.json(content_type=None)
@@ -577,7 +577,7 @@ class YouTube:
             params["api_key"] = key
 
         try:
-            timeout = aiohttp.ClientTimeout(total=120, connect=12, sock_read=60)
+            timeout = aiohttp.ClientTimeout(total=45, connect=6, sock_read=30)
             async with client.get(
                 f"{base}/download", params=params, timeout=timeout
             ) as response:
@@ -646,7 +646,7 @@ class YouTube:
                         )
                         return None
 
-                    async with client.get(direct, timeout=90) as media:
+                    async with client.get(direct, timeout=45) as media:
                         if media.status not in (200, 206):
                             logger.warning(
                                 f"[{provider}] Direct media HTTP {media.status}"
@@ -715,8 +715,8 @@ class YouTube:
                     else "bestaudio/best"
                 ),
                 "merge_output_format": "mp4" if video else None,
-                "socket_timeout": 20,
-                "retries": 2,
+                "socket_timeout": 10,
+                "retries": 1,
             }
             opts = {k: v for k, v in opts.items() if v is not None}
 
