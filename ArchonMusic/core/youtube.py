@@ -29,7 +29,7 @@ SHRUTI_API_URL = os.getenv("SHRUTI_API_URL", "https://shrutibots.site").rstrip("
 SHRUTI_API_KEY = os.getenv("SHRUTI_API_KEY", "").strip()
 
 RITESH_API_URL = os.getenv("API_URL", "https://web.riteshyt.in").rstrip("/")
-RITESH_API_KEY = os.getenv("API_KEY", "riteshfreea6901be19d3f420aad766250").strip()
+RITESH_API_KEY = os.getenv("API_KEY", "").strip()
 
 # Backward-compatible aliases used by older code in this module.
 API2_URL = SHRUTI_API_URL
@@ -646,16 +646,11 @@ class YouTube:
                         )
                         return None
 
-                    async with client.get(direct, timeout=45) as media:
-                        if media.status not in (200, 206):
-                            logger.warning(
-                                f"[{provider}] Direct media HTTP {media.status}"
-                            )
-                            return None
-                        with open(path, "wb") as fh:
-                            async for chunk in media.content.iter_chunked(131072):
-                                if chunk:
-                                    fh.write(chunk)
+                    # FAST PATH: the API already gave us a playable media URL.
+                    # Return it immediately instead of downloading the entire
+                    # file first. PyTgCalls can stream this URL directly.
+                    logger.info(f"[{provider}] Direct stream URL ready: {vid}")
+                    return direct
                 else:
                     # Raw binary response. NEVER decode this as UTF-8.
                     with open(path, "wb") as fh:
