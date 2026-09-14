@@ -289,21 +289,65 @@ class YouTube:
         client = await self.get_client()
 
         async def verify(url: str, provider: str) -> str | None:
+            """Verify an API response and also handle APIs that return JSON.
+
+            Some YouTube APIs stream the media directly while others return a
+            JSON object containing a temporary media URL.  Supporting both is
+            important for /play <youtube-link>, /skip and autoplay.
+            """
             try:
-                timeout = aiohttp.ClientTimeout(total=12, connect=4)
+                timeout = aiohttp.ClientTimeout(total=15, connect=5)
                 async with client.get(
                     url,
-                    headers={"Range": "bytes=0-1"},
+                    headers={"Range": "bytes=0-1", "Accept": "*/*"},
                     allow_redirects=True,
                     timeout=timeout,
                 ) as resp:
                     ctype = (resp.headers.get("Content-Type") or "").lower()
-                    if resp.status in (200, 206) and not any(
-                        x in ctype for x in ("application/json", "text/html", "text/plain")
+
+                    if resp.status not in (200, 206):
+                        logger.warning(
+                            f"[{provider}] Stream unavailable: HTTP {resp.status}"
+                        )
+                        return None
+
+                    # Direct media response.
+                    if not any(
+                        x in ctype
+                        for x in ("application/json", "text/html", "text/plain")
                     ):
                         logger.info(f"[{provider}] Stream ready: {vid}")
                         return str(resp.url)
-                    logger.warning(f"[{provider}] Stream unavailable: HTTP {resp.status}")
+
+                    # JSON response containing a temporary media URL.
+                    if "json" in ctype:
+                        try:
+                            data = await resp.json(content_type=None)
+                            candidates = (
+                                data.get("url"),
+                                data.get("download_url"),
+                                data.get("stream_url"),
+                                data.get("link"),
+                                (data.get("data") or {}).get("url")
+                                if isinstance(data.get("data"), dict)
+                                else None,
+                            )
+                            for candidate in candidates:
+                                if isinstance(candidate, str) and candidate.startswith(
+                                    ("http://", "https://")
+                                ):
+                                    logger.info(
+                                        f"[{provider}] API returned a media URL for {vid}"
+                                    )
+                                    return candidate
+                        except Exception as e:
+                            logger.warning(
+                                f"[{provider}] Invalid JSON response: {e}"
+                            )
+
+                    logger.warning(
+                        f"[{provider}] Non-media response: {ctype or 'unknown'}"
+                    )
             except Exception as e:
                 logger.warning(f"[{provider}] Stream check failed: {e}")
             return None
@@ -343,32 +387,101 @@ class YouTube:
             await client.close()
 
     async def track_from_url(self, url: str, m_id: int, video: bool = False) -> Track | None:
-        """Build track metadata for a direct YouTube URL without py_yt extraction."""
+        """Build metadata for a direct YouTube URL.
+
+        oEmbed is used first because it is very fast.  If YouTube blocks that
+        request, yt-dlp metadata extraction is used as a fallback.  Playback
+        itself is still handled by the configured media APIs, so a YouTube
+        page being difficult to extract does not automatically break /play.
+        """
         vid = _youtube_video_id(url)
         if not vid:
             return None
+
+        canonical = f"https://www.youtube.com/watch?v={vid}"
+
         try:
             client = await self.get_client()
             async with client.get(
                 "https://www.youtube.com/oembed",
-                params={"url": f"https://www.youtube.com/watch?v={vid}", "format": "json"},
+                params={"url": canonical, "format": "json"},
+                timeout=aiohttp.ClientTimeout(total=10, connect=5),
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json(content_type=None)
-                    title = data.get("title") or "YouTube"
-                    channel = data.get("author_name") or "YouTube"
-                    track = Track(
-                        id=vid, channel_name=channel, duration="", duration_sec=0,
-                        message_id=m_id, title=title[:80],
+                    return Track(
+                        id=vid,
+                        channel_name=data.get("author_name") or "YouTube",
+                        duration="",
+                        duration_sec=0,
+                        message_id=m_id,
+                        title=(data.get("title") or "YouTube")[:80],
                         thumbnail=data.get("thumbnail_url"),
-                        url=f"https://www.youtube.com/watch?v={vid}",
-                        view_count="", video=video,
+                        url=canonical,
+                        view_count="",
+                        video=video,
                     )
-                    # Direct URLs have no user search query; leave context unset.
-                    return track
         except Exception as e:
             logger.warning(f"[YouTube] oEmbed failed for {vid}: {e}")
-        return None
+
+        # Metadata-only fallback. No media is downloaded here.
+        try:
+            opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "skip_download": True,
+                "noplaylist": True,
+                "socket_timeout": 12,
+                "retries": 1,
+                "extractor_retries": 1,
+                "geo_bypass": True,
+                "extractor_args": {
+                    "youtube": {"player_client": ["android", "web"]}
+                },
+            }
+            cookie = self.get_cookies()
+            if cookie:
+                opts["cookiefile"] = cookie
+
+            def extract_info():
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    return ydl.extract_info(canonical, download=False)
+
+            info = await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(None, extract_info),
+                timeout=18,
+            )
+            if info:
+                duration_sec = int(info.get("duration") or 0)
+                return Track(
+                    id=vid,
+                    channel_name=info.get("channel") or info.get("uploader") or "YouTube",
+                    duration=self._format_duration(duration_sec),
+                    duration_sec=duration_sec,
+                    message_id=m_id,
+                    title=(info.get("title") or "YouTube")[:80],
+                    thumbnail=info.get("thumbnail"),
+                    url=canonical,
+                    view_count=self._format_views(info.get("view_count")),
+                    video=video,
+                )
+        except Exception as e:
+            logger.warning(f"[YouTube] metadata fallback failed for {vid}: {e}")
+
+        # Even if metadata cannot be fetched, the media APIs can still resolve
+        # the ID.  Returning a minimal Track makes direct YouTube links usable.
+        return Track(
+            id=vid,
+            channel_name="YouTube",
+            duration="",
+            duration_sec=0,
+            message_id=m_id,
+            title=f"YouTube • {vid}",
+            thumbnail=f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
+            url=canonical,
+            view_count="",
+            video=video,
+        )
 
     async def autoplay_track(
         self,
@@ -727,6 +840,120 @@ class YouTube:
         seen_ids = set(played_ids)
         seen_titles = set(blocked_titles)
 
+        # Prefer the configured search API for autoplay. This avoids relying
+        # entirely on YouTube's RD endpoint, which is often blocked on cloud
+        # hosts, and keeps the same API path used by normal /play search.
+        api_queries = queries[:5]
+        for query in api_queries:
+            if not RITESH_API_KEY:
+                break
+            try:
+                client = await self.get_client()
+                params = {"query": query, "limit": 10, "api_key": RITESH_API_KEY}
+                async with client.get(
+                    f"{RITESH_API_URL}/search",
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=15, connect=5),
+                ) as resp:
+                    if resp.status != 200:
+                        continue
+                    payload = await resp.json(content_type=None)
+                    items = (
+                        payload.get("result")
+                        or payload.get("results")
+                        or payload.get("data")
+                        or []
+                    )
+                    if isinstance(items, dict):
+                        items = (
+                            items.get("result")
+                            or items.get("results")
+                            or [items]
+                        )
+
+                    for data in items or []:
+                        eid = str(data.get("id") or "")
+                        if not eid or eid in seen_ids:
+                            continue
+
+                        result_title = (data.get("title") or "Unknown").strip()
+                        norm = self._norm_title(result_title)
+                        if (
+                            not norm
+                            or self._same_song(result_title, title)
+                            or any(
+                                self._same_song(result_title, old)
+                                for old in blocked_titles
+                            )
+                        ):
+                            continue
+
+                        result_lower = result_title.lower()
+                        blocked_variants = (
+                            "remix", "mashup", "medley", "dj mix", "dj remix",
+                            "slowed", "slowed + reverb", "speed up", "sped up",
+                            "lofi", "lo-fi", "nightcore", "bass boosted",
+                            "8d audio", "cover", "live", "karaoke",
+                            "reaction", "shorts", "short video",
+                        )
+                        if any(word in result_lower for word in blocked_variants):
+                            continue
+
+                        duration_str = data.get("duration")
+                        try:
+                            duration_sec = (
+                                utils.to_seconds(duration_str)
+                                if duration_str
+                                else int(data.get("duration_sec") or 0)
+                            )
+                        except Exception:
+                            duration_sec = 0
+
+                        if not duration_sec or duration_sec > config.DURATION_LIMIT:
+                            continue
+                        if self._is_compilation_or_long_mix(result_title, duration_sec):
+                            continue
+
+                        channel_data = data.get("channel")
+                        channel_name = (
+                            channel_data.get("name", "")
+                            if isinstance(channel_data, dict)
+                            else (channel_data or data.get("uploader") or "YouTube")
+                        )
+                        if language_hint and not self._language_matches(
+                            language_hint, result_title, channel_name
+                        ):
+                            continue
+
+                        thumbs = data.get("thumbnails") or []
+                        thumbnail = None
+                        if thumbs:
+                            last = thumbs[-1]
+                            if isinstance(last, dict):
+                                thumbnail = last.get("url")
+                            else:
+                                thumbnail = str(last) if last else None
+                        link = data.get("link") or f"{self.base}{eid}"
+
+                        seen_ids.add(eid)
+                        seen_titles.add(norm)
+                        candidates.append(
+                            Track(
+                                id=eid,
+                                channel_name=channel_name,
+                                duration=duration_str or self._format_duration(duration_sec),
+                                duration_sec=duration_sec,
+                                title=result_title[:80],
+                                thumbnail=(thumbnail or "").split("?")[0] or None,
+                                url=link,
+                                view_count=str(data.get("viewCount") or ""),
+                                video=False,
+                            )
+                        )
+            except Exception as e:
+                logger.warning(f"[Autoplay] API search failed for {query!r}: {e!r}")
+
+        # py_yt remains the fallback when the search API has no usable result.
         for query in queries:
             try:
                 results = await VideosSearch(query, limit=20).next()
