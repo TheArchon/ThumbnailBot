@@ -29,7 +29,7 @@ SHRUTI_API_URL = os.getenv("SHRUTI_API_URL", "https://api01.shrutibots.site").rs
 SHRUTI_API_KEY = os.getenv("SHRUTI_API_KEY", "").strip()
 
 RITESH_API_URL = os.getenv("API_URL", "https://web.riteshyt.in").rstrip("/")
-RITESH_API_KEY = os.getenv("API_KEY", "riteshfreea6901be19d3f420aad766250").strip()
+RITESH_API_KEY = os.getenv("API_KEY", "").strip()
 
 # Backward-compatible aliases used by older code in this module.
 API2_URL = SHRUTI_API_URL
@@ -586,7 +586,7 @@ class YouTube:
             view_count="", video=video,
         )
 
-    async def get_related(self, video_id: str, video: bool = False, max_duration: int = 0) -> Track | None:
+    async def get_related(self, video_id: str, video: bool = False, max_duration: int = 0, blocked_ids: set[str] | None = None, blocked_titles: set[str] | None = None) -> Track | None:
         """Return a language-matched autoplay track.
 
         The language context is propagated from every selected autoplay track,
@@ -606,7 +606,8 @@ class YouTube:
             )
         queries = self._language_query(context, hint)
         candidates = []
-        seen = {str(video_id)}
+        seen = {str(video_id)} | {str(x) for x in (blocked_ids or set())}
+        blocked_norm_titles = {self._norm_title(x) for x in (blocked_titles or set()) if x}
 
         # Search both APIs in the same provider order as downloads: Shruti first,
         # then Ritesh. The query itself is language-scoped.
@@ -618,6 +619,8 @@ class YouTube:
                 for data in await self._api_search(base, key, q, 12):
                     tr = self._track_from_data(data, video=video)
                     if not tr or str(tr.id) in seen or not tr.duration_sec:
+                        continue
+                    if blocked_norm_titles and any(self._same_song(tr.title or "", old) for old in blocked_norm_titles):
                         continue
                     if max_duration and tr.duration_sec > max_duration:
                         continue
@@ -644,6 +647,8 @@ class YouTube:
                     for data in (results or {}).get("result", []):
                         tr = self._track_from_data(data, video=video)
                         if not tr or str(tr.id) in seen or not tr.duration_sec:
+                            continue
+                        if blocked_norm_titles and any(self._same_song(tr.title or "", old) for old in blocked_norm_titles):
                             continue
                         if max_duration and tr.duration_sec > max_duration:
                             continue
@@ -893,29 +898,47 @@ class YouTube:
         typ = "video" if video else "audio"
         youtube_url = f"https://www.youtube.com/watch?v={vid}"
 
-        # PRIMARY: Shruti direct streaming endpoint. The current API returns
-        # media bytes from /download, so FFmpeg can consume this URL directly.
+        # Fast provider selection: verify each direct endpoint with a tiny
+        # ranged request before handing it to FFmpeg. This keeps Shruti first
+        # but automatically falls through to Ritesh if Shruti is down, expired,
+        # unauthorized, or cannot serve this video.
+        providers = []
         if SHRUTI_API_KEY:
             params = urllib.parse.urlencode({
                 "url": vid,
                 "type": typ,
                 "api_key": SHRUTI_API_KEY,
             })
-            direct = f"{SHRUTI_API_URL}/download?{params}"
-            self._stream_cache[(vid, bool(video))] = direct
-            logger.info(f"[Shruti] Direct stream URL ready: {vid}")
-            return direct
+            providers.append((
+                "Shruti",
+                f"{SHRUTI_API_URL}/download?{params}",
+            ))
 
-        # FALLBACK: Ritesh optimized media endpoint.
         if RITESH_API_KEY:
             ext = "mp4" if video else "mp3"
-            direct = (
-                f"{RITESH_API_URL}/downloads/{RITESH_API_KEY}/"
-                f"youtube.com/{vid}.{ext}"
-            )
-            self._stream_cache[(vid, bool(video))] = direct
-            logger.info(f"[Ritesh] Direct stream URL ready: {vid}")
-            return direct
+            providers.append((
+                "Ritesh",
+                f"{RITESH_API_URL}/downloads/{RITESH_API_KEY}/youtube.com/{vid}.{ext}",
+            ))
+
+        client = await self.get_client()
+        for provider, direct in providers:
+            try:
+                # Range request avoids downloading the media while confirming
+                # that the endpoint is actually usable.
+                async with client.get(
+                    direct,
+                    headers={"Range": "bytes=0-1023"},
+                    timeout=aiohttp.ClientTimeout(total=5, connect=2),
+                ) as response:
+                    if response.status in (200, 206):
+                        await response.content.read(1)
+                        self._stream_cache[(vid, bool(video))] = direct
+                        logger.info(f"[{provider}] Direct stream ready: {vid}")
+                        return direct
+                    logger.warning(f"[{provider}] Stream HTTP {response.status}: {vid}")
+            except Exception as e:
+                logger.warning(f"[{provider}] Stream check failed for {vid}: {e}")
 
         # LAST RESORT: local yt-dlp download.
         logger.warning(f"[YouTube] API keys unavailable; using yt-dlp for {vid}")

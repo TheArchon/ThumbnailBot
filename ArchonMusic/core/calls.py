@@ -31,6 +31,9 @@ class TgCall(PyTgCalls):
         self.clients = []
         self.restarting = defaultdict(int)
         self.prefetch_tasks = {}
+        self.autoplay_history = defaultdict(set)
+        self.autoplay_title_history = defaultdict(set)
+        self.next_locks = defaultdict(asyncio.Lock)
 
     async def pause(self, chat_id: int) -> bool:
         client = await db.get_assistant(chat_id)
@@ -75,16 +78,21 @@ class TgCall(PyTgCalls):
                     if not next_media and await db.get_autoplay(chat_id):
                         if isinstance(media, Track):
                             max_duration = min(int(media.duration_sec * 1.5), 900)
-                            next_media = await yt.get_related(
-                                media.id, video=media.video, max_duration=max_duration
-                            )
+                            next_media = await self._get_autoplay_track(chat_id, media)
                             if next_media:
+                                self.autoplay_history[chat_id].add(str(next_media.id))
+                                if next_media.title:
+                                    self.autoplay_title_history[chat_id].add(next_media.title)
                                 queue.add(chat_id, next_media)
 
                     if next_media and not next_media.file_path:
-                        next_media.file_path = await yt.download(
+                        next_media.file_path = await yt.stream_url(
                             next_media.id, video=next_media.video
                         )
+                        if not next_media.file_path:
+                            next_media.file_path = await yt.download(
+                                next_media.id, video=next_media.video
+                            )
                     break
 
                 await asyncio.sleep(5)
@@ -107,6 +115,8 @@ class TgCall(PyTgCalls):
             except Exception:
                 pass
         queue.clear(chat_id)
+        self.autoplay_history.pop(chat_id, None)
+        self.autoplay_title_history.pop(chat_id, None)
         await db.remove_call(chat_id)
         await db.set_loop(chat_id, 0)
 
@@ -145,7 +155,7 @@ class TgCall(PyTgCalls):
         if not media.file_path:
             if message is not None:
                 await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
-            return await self.play_next(chat_id)
+            return await self._play_next(chat_id)
 
         ffmpeg_params = (
             (f"-ss {seek_time} " if seek_time > 1 else "")
@@ -222,7 +232,7 @@ class TgCall(PyTgCalls):
         except FileNotFoundError:
             if message is not None:
                 await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
-            await self.play_next(chat_id)
+            await self._play_next(chat_id)
         except exceptions.NoActiveGroupCall:
             await self.stop(chat_id)
             if message is not None:
@@ -230,11 +240,11 @@ class TgCall(PyTgCalls):
         except exceptions.NoAudioSourceFound:
             if message is not None:
                 await message.edit_text(_lang["error_no_audio"])
-            await self.play_next(chat_id)
+            await self._play_next(chat_id)
         except (asyncio.TimeoutError, TimeoutError):
             if message is not None:
                 await message.edit_text(_lang["error_tg_server"])
-            await self.play_next(chat_id)
+            await self._play_next(chat_id)
         except (ConnectionError, ConnectionNotFound, TelegramServerError):
             await self.stop(chat_id)
             await message.edit_text(_lang["error_tg_server"])
@@ -260,13 +270,19 @@ class TgCall(PyTgCalls):
         media.message_id = msg.id
         await self.play_media(chat_id, msg, media)
 
-    async def _get_autoplay_track(self, current: Track):
+    async def _get_autoplay_track(self, chat_id: int, current: Track):
         """Retry autoplay search instead of stopping the call after one failure."""
         max_duration = min(int((current.duration_sec or 600) * 1.5), 900)
         for attempt in range(4):
             try:
                 media = await asyncio.wait_for(
-                    yt.get_related(current.id, video=current.video, max_duration=max_duration),
+                    yt.get_related(
+                        current.id,
+                        video=current.video,
+                        max_duration=max_duration,
+                        blocked_ids=self.autoplay_history.get(chat_id, set()),
+                        blocked_titles=self.autoplay_title_history.get(chat_id, set()),
+                    ),
                     timeout=18,
                 )
                 if media:
@@ -278,13 +294,26 @@ class TgCall(PyTgCalls):
         return None
 
     async def play_next(self, chat_id: int, skip_user: str | None = None) -> None:
-        """Advance the queue; autoplay is completely silent."""
+        """Advance exactly once per chat; protects skip/StreamEnded races."""
+        lock = self.next_locks[chat_id]
+        if lock.locked():
+            logger.info(f"[Skip/Autoplay] advance already running for {chat_id}")
+            return
+        async with lock:
+            return await self._play_next(chat_id, skip_user=skip_user)
+
+    async def _play_next(self, chat_id: int, skip_user: str | None = None) -> None:
+        """Internal queue advance; autoplay is completely silent."""
         if loop := await db.get_loop(chat_id):
             await db.set_loop(chat_id, loop - 1)
             return await self.replay(chat_id)
 
         _lang = await lang.get_lang(chat_id)
         current = queue.get_current(chat_id)
+        if current and isinstance(current, Track):
+            self.autoplay_history.setdefault(chat_id, set()).add(str(current.id))
+            if current.title:
+                self.autoplay_title_history.setdefault(chat_id, set()).add(current.title)
         # Keep the current player message for silent autoplay so no extra
         # Telegram reply is created. It can be edited by play_media().
         current_message = None
@@ -296,8 +325,11 @@ class TgCall(PyTgCalls):
 
         media = queue.get_next(chat_id)
         if not media and await db.get_autoplay(chat_id) and isinstance(current, Track):
-            media = await self._get_autoplay_track(current)
+            media = await self._get_autoplay_track(chat_id, current)
             if media:
+                self.autoplay_history.setdefault(chat_id, set()).add(str(media.id))
+                if media.title:
+                    self.autoplay_title_history.setdefault(chat_id, set()).add(media.title)
                 queue.add(chat_id, media)
                 media = queue.get_current(chat_id)
 
@@ -312,10 +344,12 @@ class TgCall(PyTgCalls):
             return await app.send_message(chat_id, _lang["queue_finished"])
 
         if not media.file_path:
-            media.file_path = await yt.download(media.id, video=media.video)
+            media.file_path = await yt.stream_url(media.id, video=media.video)
             if not media.file_path:
-                logger.warning(f"[Autoplay/Queue] Download failed for {media.id}")
-                return await self.play_next(chat_id, skip_user=skip_user)
+                media.file_path = await yt.download(media.id, video=media.video)
+            if not media.file_path:
+                logger.warning(f"[Autoplay/Queue] Stream/download failed for {media.id}")
+                return await self._play_next(chat_id, skip_user=skip_user)
 
         # Normal queued playback may reuse its player message. Autoplay also
         # reuses the existing message and never sends a new status reply.
