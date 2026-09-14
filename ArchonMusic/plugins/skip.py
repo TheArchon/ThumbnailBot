@@ -19,12 +19,3 @@ async def _skip(_, m: types.Message):
 
     await ArchonMusic.play_next(m.chat.id, m.from_user.mention)
 
-    # Send the skip confirmation, then delete it as well.
-    try:
-        msg = await app.send_message(
-            chat_id=m.chat.id,
-            text=m.lang["play_skipped"].format(m.from_user.mention),
-        )
-        await msg.delete()
-    except Exception:
-        pass
