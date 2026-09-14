@@ -29,7 +29,7 @@ SHRUTI_API_URL = os.getenv("SHRUTI_API_URL", "https://api01.shrutibots.site").rs
 SHRUTI_API_KEY = os.getenv("SHRUTI_API_KEY", "").strip()
 
 RITESH_API_URL = os.getenv("API_URL", "https://web.riteshyt.in").rstrip("/")
-RITESH_API_KEY = os.getenv("API_KEY", "riteshfreea6901be19d3f420aad766250").strip()
+RITESH_API_KEY = os.getenv("API_KEY", "").strip()
 
 # Backward-compatible aliases used by older code in this module.
 API2_URL = SHRUTI_API_URL
@@ -68,17 +68,49 @@ _LANGUAGE_MARKERS = {
 # Common artist/channel hints. Metadata is preferred; these are only a fallback
 # when the provider does not expose a language field.
 _ARTIST_LANGUAGE = {
+    # Bhojpuri
     "pawan singh": "bhojpuri", "khesari lal yadav": "bhojpuri",
     "shilpi raj": "bhojpuri", "neelkamal singh": "bhojpuri",
+    "ritesh pandey": "bhojpuri", "pramod premi yadav": "bhojpuri",
+    "pramod premi": "bhojpuri", "arvind akela kallu": "bhojpuri",
+    "ankush raja": "bhojpuri", "gunjan singh": "bhojpuri",
+    "rajesh raja": "bhojpuri", "rakesh mishra": "bhojpuri",
+    # Punjabi
     "bohemia": "punjabi", "diljit dosanjh": "punjabi",
     "karan aujla": "punjabi", "ap dhillon": "punjabi",
-    "sidhu moose wala": "punjabi", "guru randhawa": "punjabi",
+    "sidhu moose wala": "punjabi", "sidhu moosewala": "punjabi",
+    "guru randhawa": "punjabi", "amrit maan": "punjabi",
+    "shubh": "punjabi", "gippy grewal": "punjabi",
+    "jazzy b": "punjabi", "babbu maan": "punjabi",
+    # Hindi / Bollywood
     "arijit singh": "hindi", "atif aslam": "hindi",
     "shreya ghoshal": "hindi", "sonu nigam": "hindi",
     "jubin nautiyal": "hindi", "t-series": "hindi",
-    "a.r. rahman": "tamil", "ar rahman": "tamil",
-    "anirudh": "tamil", "thaman s": "telugu",
-    "devi sri prasad": "telugu", "udit narayan": "hindi",
+    "udit narayan": "hindi", "kumar sanu": "hindi",
+    "alka yagnik": "hindi", "kavita krishnamurti": "hindi",
+    "sukhwinder singh": "hindi", "kk": "hindi",
+    "mohit chauhan": "hindi", "vishal dadlani": "hindi",
+    "shaan": "hindi", "atif": "hindi", "bollywood": "hindi",
+    # Tamil
+    "a.r. rahman": "tamil", "a r rahman": "tamil", "ar rahman": "tamil",
+    "anirudh": "tamil", "ilaiyaraaja": "tamil", "yuvan shankar raja": "tamil",
+    # Telugu
+    "thaman s": "telugu", "s. thaman": "telugu",
+    "devi sri prasad": "telugu", "sid sriram": "telugu",
+    # Marathi
+    "ajay atul": "marathi", "swapnil bandodkar": "marathi",
+    "avdhoot gupte": "marathi",
+    # Gujarati
+    "kinjal dave": "gujarati", "geeta rabari": "gujarati",
+    "jignesh kaviraj": "gujarati", "devayat khavad": "gujarati",
+    # Bengali
+    "arijit singh bengali": "bengali", "shreya ghoshal bengali": "bengali",
+    # Kannada
+    "raghu dixit": "kannada", "vijay prakash": "kannada",
+    # Malayalam
+    "vineeth sreenivasan": "malayalam", "shaan rahman": "malayalam",
+    # Assamese
+    "zubeen garg": "assamese", "papon": "assamese",
 }
 
 
@@ -465,12 +497,18 @@ class YouTube:
         return self._language_hint(f"{title} {channel}")
 
     def _language_query(self, context: str, hint: str | None) -> list[str]:
-        """Build focused searches so autoplay does not fall into a global mix."""
-        base = (context or "").split(" | ")[0].strip()
+        """Build narrowly-scoped searches from the original song context."""
+        parts = [p.strip() for p in str(context or "").split(" | ")]
+        # Context format: language | original query | selected title | channel.
+        original = parts[1] if len(parts) > 1 else (parts[0] if parts else "")
+        current_title = parts[2] if len(parts) > 2 else ""
+        channel = parts[3] if len(parts) > 3 else ""
+
         if not hint:
-            # No language was explicitly detected: keep the original context,
-            # but do not invent a language and accidentally block a valid song.
-            return [base] if base else []
+            # Unknown language cannot be made strict. Still stay close to the
+            # current song instead of using a global recommendation query.
+            q = " ".join(x for x in (original, current_title, channel, "song") if x).strip()
+            return [q] if q else []
 
         labels = {
             "hindi": ["Hindi movie songs", "Bollywood Hindi songs"],
@@ -487,8 +525,10 @@ class YouTube:
             "assamese": ["Assamese songs", "Assamese movie songs"],
         }
         queries = []
-        if base:
-            queries.append(f"{base} {hint} song")
+        if original or current_title or channel:
+            queries.append(" ".join(x for x in (original, current_title, hint, "song") if x))
+        if current_title or channel:
+            queries.append(" ".join(x for x in (current_title, channel, hint, "song") if x))
         queries.extend(labels.get(hint, [f"{hint} songs"]))
         return list(dict.fromkeys(q.strip() for q in queries if q.strip()))
 
@@ -555,7 +595,15 @@ class YouTube:
         """
         context = getattr(self, "track_context", {}).get(str(video_id), "")
         parts = [p.strip() for p in context.split(" | ")] if context else []
-        hint = parts[0] if parts and parts[0] in _LANGUAGE_MARKERS else self._language_hint(context)
+        title_from_context = parts[2] if len(parts) > 2 else ""
+        channel_from_context = parts[3] if len(parts) > 3 else ""
+        hint = parts[0] if parts and parts[0].casefold() in _LANGUAGE_MARKERS else None
+        if not hint:
+            # If the original query did not say "Hindi/Punjabi/...", lock to
+            # the language detectable from the actual selected track.
+            hint = self._language_hint(
+                " ".join([context, title_from_context, channel_from_context])
+            )
         queries = self._language_query(context, hint)
         candidates = []
         seen = {str(video_id)}
