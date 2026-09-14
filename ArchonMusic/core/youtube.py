@@ -18,8 +18,8 @@ import urllib.parse
 import aiohttp
 from py_yt import Playlist, Recommendations, VideosSearch
 
-from KartikMusic import logger
-from KartikMusic.helpers import Track, utils
+from ArchonMusic import logger
+from ArchonMusic.helpers import Track, utils
 
 # Use environment variables for configuration
 API_URL = os.getenv("API_URL", "https://web.riteshyt.in").rstrip("/")
