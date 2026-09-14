@@ -29,7 +29,7 @@ SHRUTI_API_URL = os.getenv("SHRUTI_API_URL", "https://shrutibots.site").rstrip("
 SHRUTI_API_KEY = os.getenv("SHRUTI_API_KEY", "").strip()
 
 RITESH_API_URL = os.getenv("API_URL", "https://web.riteshyt.in").rstrip("/")
-RITESH_API_KEY = os.getenv("API_KEY", "riteshfreea6901be19d3f420aad766250").strip()
+RITESH_API_KEY = os.getenv("API_KEY", "").strip()
 
 # Backward-compatible aliases used by older code in this module.
 API2_URL = SHRUTI_API_URL
@@ -115,6 +115,8 @@ class YouTube:
         )
         self._client = None
         self.track_context = {}
+        self._stream_cache = {}
+        self._stream_tasks = {}
 
     async def get_client(self):
         if self._client is None or self._client.closed:
@@ -190,6 +192,9 @@ class YouTube:
         language = self._result_language(meta, track.title or "", track.channel_name or "")
         requested = self._language_hint(original_query)
         lock = requested or language
+        # Keep the lock permanently attached to the track. If the provider
+        # exposes no language metadata, the lock can remain auto; in that
+        # case autoplay will not pretend that an unknown result is a match.
         return f"{lock or 'auto'} | {original_query} | {track.title or ''} | {track.channel_name or ''}"
 
     async def search(self, query: str, m_id: int, video: bool = False) -> Track | None:
@@ -488,12 +493,17 @@ class YouTube:
         return list(dict.fromkeys(q.strip() for q in queries if q.strip()))
 
     def _same_language(self, data, title: str, channel: str, hint: str | None) -> bool:
+        """Strict language gate for autoplay.
+
+        Once a language lock exists, an unknown-language candidate is NOT
+        accepted. The old code treated ``None`` as a match, which is exactly
+        what allowed Hindi -> Punjabi/English/etc. drift when provider search
+        metadata did not contain a language field.
+        """
         if not hint:
             return True
         detected = self._result_language(data, title, channel)
-        # Unknown metadata is allowed only when the search query itself was
-        # explicitly language-scoped. The caller handles that lock.
-        return detected in (None, hint)
+        return detected == hint
 
     async def _api_search(self, base: str, key: str, query: str, limit: int = 8):
         client = await self.get_client()
@@ -604,7 +614,10 @@ class YouTube:
                     break
 
         if candidates:
-            selected = random.choice(candidates)
+            # Candidates have already passed the strict language gate. Keep
+            # the first result rather than randomly jumping between different
+            # recommendations on every autoplay hop.
+            selected = candidates[0]
             # Critical: propagate the language context to the NEXT autoplay hop.
             selected_context = (
                 f"{hint} | {selected.title} | {selected.channel_name}"
@@ -676,9 +689,17 @@ class YouTube:
                     "application/javascript",
                 ):
                     raw = await response.read()
+                    text = raw.decode("utf-8", errors="ignore").strip()
+
+                    # Some fast APIs return the playable URL as plain text
+                    # instead of JSON. Accept that format too.
+                    if text.startswith("http://") or text.startswith("https://"):
+                        logger.info(f"[{provider}] Direct stream URL ready: {vid}")
+                        return text
+
                     try:
                         import json
-                        data = json.loads(raw.decode("utf-8"))
+                        data = json.loads(text)
                     except (UnicodeDecodeError, json.JSONDecodeError):
                         logger.warning(
                             f"[{provider}] Non-JSON text response for {vid}"
@@ -806,13 +827,36 @@ class YouTube:
         return None
 
     async def stream_url(self, video_id: str, video: bool = False) -> str | None:
-        """Compatibility method required by plugins/play.py.
+        """Return the fastest playable source available.
 
-        `play.py` expects a stream_url() method. The API providers may return
-        either a remote URL or raw media bytes, so the reliable contract here
-        is a playable LOCAL file path. PyTgCalls can consume that path directly.
+        Results are cached and concurrent requests for the same track share
+        one task. API-provided direct URLs are returned immediately; raw API
+        media is saved locally; yt-dlp remains the final fallback.
         """
-        return await self.download(video_id, video=video)
+        vid = self._video_id(video_id) or str(video_id).strip()
+        if not vid:
+            return None
+        key = f"{vid}:{1 if video else 0}"
+
+        cached = self._stream_cache.get(key)
+        if cached:
+            if cached.startswith("http") or (os.path.exists(cached) and os.path.getsize(cached) > 1024):
+                return cached
+            self._stream_cache.pop(key, None)
+
+        task = self._stream_tasks.get(key)
+        if task is None:
+            task = asyncio.create_task(self.download(vid, video=video))
+            self._stream_tasks[key] = task
+
+        try:
+            result = await task
+            if result:
+                self._stream_cache[key] = result
+            return result
+        finally:
+            if self._stream_tasks.get(key) is task:
+                self._stream_tasks.pop(key, None)
 
     async def close(self):
         if self._client and not self._client.closed:
