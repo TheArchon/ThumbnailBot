@@ -1,9 +1,9 @@
 #
 # Copyright (C) 2025-present by TheAloneTeam@Github, < https://github.com/TheAloneTeam >.
 #
-# This file is part of < https://github.com/TheAloneTeam/ArchonMusic > project,
+# This file is part of < https://github.com/TheAloneTeam/KartikMusic > project,
 # and is released under the "MIT License".
-# Please see < https://github.com/TheAloneTeam/ArchonMusic/blob/master/LICENSE >
+# Please see < https://github.com/TheAloneTeam/KartikMusic/blob/master/LICENSE >
 #
 # All rights reserved.
 #
@@ -96,6 +96,8 @@ class TgCall(PyTgCalls):
             self.prefetch_tasks.pop(chat_id, None)
 
     async def stop(self, chat_id: int) -> None:
+        if task := self.prefetch_tasks.pop(chat_id, None):
+            task.cancel()
 
         client = await db.get_assistant(chat_id)
         media = queue.get_current(chat_id)
@@ -234,7 +236,7 @@ class TgCall(PyTgCalls):
             await self.stop(chat_id)
             await message.edit_text(_lang["error_rtmp"])
         finally:
-            await asyncio.sleep(5)
+            await asyncio.sleep(1)
             self.restarting[chat_id] -= 1
 
     async def replay(self, chat_id: int) -> None:
@@ -251,6 +253,23 @@ class TgCall(PyTgCalls):
         msg = await app.send_message(chat_id=chat_id, text=_lang["play_again"])
         media.message_id = msg.id
         await self.play_media(chat_id, msg, media)
+
+    async def _get_autoplay_track(self, current: Track):
+        """Retry autoplay search instead of stopping the call after one failure."""
+        max_duration = min(int((current.duration_sec or 600) * 1.5), 900)
+        for attempt in range(4):
+            try:
+                media = await asyncio.wait_for(
+                    yt.get_related(current.id, video=current.video, max_duration=max_duration),
+                    timeout=18,
+                )
+                if media:
+                    return media
+            except Exception as e:
+                logger.warning(f"[Autoplay] attempt {attempt + 1}/4 failed: {e}")
+            if attempt < 3:
+                await asyncio.sleep(0.5)
+        return None
 
     async def play_next(self, chat_id: int, skip_user: str | None = None) -> None:
         if loop := await db.get_loop(chat_id):
@@ -275,54 +294,36 @@ class TgCall(PyTgCalls):
                             chat_id, _lang["autoplay_skip"].format(skip_user)
                         )
                     else:
-                        msg = await app.send_message(chat_id, _lang["autoplay_next"])
+                        msg = await app.send_message(chat_id, _lang.get("autoplay_next", "▶️ Autoplay: finding next song..."))
 
                     # Set max duration for autoplay tracks based on current song
                     # but capped at 15 minutes to avoid extremely long tracks
                     # Use existing next item if it was pre-fetched
                     media = queue.get_current(chat_id)
                     if not media:
-                        max_duration = min(int((current.duration_sec or 300) * 1.5), 900)
-                        for _attempt in range(3):
-                            media = await yt.get_related(
-                                current.id, video=current.video, max_duration=max_duration
-                            )
-                            if media:
-                                queue.add(chat_id, media)
-                                break
-                            await asyncio.sleep(0.35)
+                        media = await self._get_autoplay_track(current)
+                        if media:
+                            queue.add(chat_id, media)
 
                     if media:
-                        media = queue.get_current(chat_id) or media
+                        # Re-fetch from queue in case it was just added to ensure
+                        # we have the object that might have file_path set by prefetcher
+                        media = queue.get_current(chat_id)
+
                         if not media.file_path:
                             media.file_path = await yt.download(
                                 media.id, video=media.video
                             )
-                        if not media.file_path:
-                            for _attempt in range(2):
-                                retry_media = await yt.get_related(
-                                    current.id, video=current.video, max_duration=max_duration
-                                )
-                                if not retry_media:
-                                    await asyncio.sleep(0.35)
-                                    continue
-                                retry_media.file_path = await yt.download(
-                                    retry_media.id, video=retry_media.video
-                                )
-                                if retry_media.file_path:
-                                    queue.add(chat_id, retry_media)
-                                    media = retry_media
-                                    break
-                        if media.file_path:
-                            media.message_id = msg.id
-                            return await self.play_media(chat_id, msg, media)
-                        if msg:
-                            try:
-                                await msg.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
-                            except Exception:
-                                pass
-                        await asyncio.sleep(1)
-                        return await self.play_next(chat_id)
+                            if not media.file_path:
+                                logger.warning(f"[Autoplay] Download failed for {media.id}; trying another song")
+                                try:
+                                    await msg.edit_text("▶️ Autoplay: trying another song...")
+                                except Exception:
+                                    pass
+                                return await self.play_next(chat_id)
+
+                        media.message_id = msg.id
+                        return await self.play_media(chat_id, msg, media)
                     else:
                         await self.stop(chat_id)
                         if msg:
