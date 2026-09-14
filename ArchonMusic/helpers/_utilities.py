@@ -99,10 +99,6 @@ class Utilities:
 
         return None
 
-    # ==========================================================
-    # PLAY LOG
-    # ==========================================================
-
     async def play_log(
         self,
         m: types.Message,
@@ -112,176 +108,77 @@ class Utilities:
         query: str = None,
         stream_type: str = "youtube",
     ) -> None:
-        try:
-            if not m or not m.chat:
-                return
+        if m.chat.id == app.logger:
+            return
 
-            # Do not log messages from logger chat itself
-            if m.chat.id == app.logger:
-                return
+        chat = m.chat
+        user = m.from_user
 
-            chat = m.chat
-            user = m.from_user
+        chat_username = (
+            f"@{chat.username}" if chat.username else "N/A"
+        )
 
-            # -----------------------------
-            # Chat information
-            # -----------------------------
-            chat_username = (
-                f"@{chat.username}"
-                if chat.username
-                else "N/A"
-            )
+        username = (
+            f"@{user.username}"
+            if user and user.username
+            else "N/A"
+        )
 
-            chat_name = chat.title or "Private Chat"
+        user_name = (
+            user.first_name
+            if user and user.first_name
+            else "N/A"
+        )
 
-            # -----------------------------
-            # User information
-            # -----------------------------
-            user_id = user.id if user else 0
+        user_mention = (
+            user.mention
+            if user
+            else "Anonymous"
+        )
 
-            username = (
-                f"@{user.username}"
-                if user and user.username
-                else "N/A"
-            )
+        _text = (
+            f"❖ {app.mention} ᴘʟᴀʏ ʟᴏɢ\n\n"
+            f"● ᴄʜᴀᴛ ɪᴅ ➠ {chat.id}\n"
+            f"● ᴄʜᴀᴛ ɴᴀᴍᴇ ➠ {chat.title or 'N/A'}\n"
+            f"● ᴄʜᴀᴛ ᴜsᴇʀɴᴀᴍᴇ ➠ {chat_username}\n\n"
+            f"● ᴜsᴇʀ ɪᴅ ➠ {user.id if user else 0}\n"
+            f"● ɴᴀᴍᴇ ➠ {user_name}\n"
+            f"● ᴜsᴇʀɴᴀᴍᴇ ➠ {username}\n\n"
+            f"● ǫᴜᴇʀʏ ➠ {query or 'N/A'}\n"
+            f"● sᴛʀᴇᴀᴍᴛʏᴘᴇ ➠ {stream_type or 'youtube'}"
+        )
 
-            if user:
-                first_name = user.first_name or ""
-                last_name = user.last_name or ""
-
-                full_name = (
-                    f"{first_name} {last_name}".strip()
-                    or "N/A"
-                )
-            else:
-                full_name = "Anonymous"
-
-            # -----------------------------
-            # Song information
-            # -----------------------------
-            song_title = title or query or "N/A"
-            song_duration = duration or "N/A"
-            song_link = link or "N/A"
-            stream = stream_type or "youtube"
-
-            # -----------------------------
-            # Logger message
-            # -----------------------------
-            text = (
-                "● Pʟᴀʏ Lᴏɢ\n\n"
-                f"● Cʜᴀᴛ Iᴅ: {chat.id}\n"
-                f"● Cʜᴀᴛ Nᴀᴍᴇ: {chat_name}\n"
-                f"● Cʜᴀᴛ Usᴇʀɴᴀᴍᴇ: {chat_username}\n\n"
-                f"● Iᴅ: {user_id}\n"
-                f"● Nᴀᴍᴇ: {username} | {full_name}\n\n"
-                f"● Sᴏɴɢ: {song_title}\n"
-                f"● Dᴜʀᴀᴛɪᴏɴ: {song_duration}\n"
-                f"● Sᴛʀᴇᴀᴍ: {stream}\n"
-                f"● Lɪɴᴋ: {song_link}"
-            )
-
-            await app.send_message(
-                chat_id=app.logger,
-                text=text,
-            )
-
-        except Exception as e:
-            print(f"PLAY LOG ERROR: {e}")
-
-    # ==========================================================
-    # NEW USER / NEW CHAT LOG
-    # ==========================================================
+        await app.send_message(
+            chat_id=app.logger,
+            text=_text,
+        )
 
     async def send_log(
         self,
         m: types.Message,
         chat: bool = False,
     ) -> None:
-        try:
-            if not m:
-                return
-
-            # -----------------------------
-            # NEW CHAT LOG
-            # -----------------------------
-            if chat:
-                user = m.from_user
-
-                user_id = user.id if user else 0
-
-                username = (
-                    f"@{user.username}"
-                    if user and user.username
-                    else "N/A"
-                )
-
-                if user:
-                    first_name = user.first_name or ""
-                    last_name = user.last_name or ""
-
-                    full_name = (
-                        f"{first_name} {last_name}".strip()
-                        or "N/A"
-                    )
-                else:
-                    full_name = "Anonymous"
-
-                chat_name = m.chat.title or "N/A"
-
-                text = (
-                    "● Nᴇᴡ Cʜᴀᴛ Lᴏɢ\n\n"
-                    f"● Cʜᴀᴛ Iᴅ: {m.chat.id}\n"
-                    f"● Cʜᴀᴛ Nᴀᴍᴇ: {chat_name}\n\n"
-                    f"● Iᴅ: {user_id}\n"
-                    f"● Nᴀᴍᴇ: {username} | {full_name}"
-                )
-
-                return await app.send_message(
-                    chat_id=app.logger,
-                    text=text,
-                )
-
-            # -----------------------------
-            # NEW USER LOG
-            # -----------------------------
+        if chat:
             user = m.from_user
 
-            if not user:
-                return
-
-            user_id = user.id
-
-            username = (
-                f"@{user.username}"
-                if user.username
-                else "N/A"
-            )
-
-            first_name = user.first_name or ""
-            last_name = user.last_name or ""
-
-            full_name = (
-                f"{first_name} {last_name}".strip()
-                or "N/A"
-            )
-
-            text = (
-                "● Nᴇᴡ Usᴇʀ Lᴏɢ\n\n"
-                f"● Iᴅ: {user_id}\n"
-                f"● Nᴀᴍᴇ: {username} | {full_name}"
-            )
-
-            await app.send_message(
+            return await app.send_message(
                 chat_id=app.logger,
-                text=text,
+                text=m.lang["log_chat"].format(
+                    m.chat.id,
+                    m.chat.title,
+                    user.id if user else 0,
+                    user.mention if user else "Anonymous",
+                ),
             )
 
-        except Exception as e:
-            print(f"USER/CHAT LOG ERROR: {e}")
-
-    # ==========================================================
-    # BOT REMOVED LOG
-    # ==========================================================
+        await app.send_message(
+            chat_id=app.logger,
+            text=m.lang["log_user"].format(
+                m.from_user.id,
+                f"@{m.from_user.username}",
+                m.from_user.mention,
+            ),
+        )
 
     async def send_left_log(
         self,
@@ -292,28 +189,18 @@ class Utilities:
         try:
             user_id = user.id if user else 0
 
-            username = (
-                f"@{user.username}"
-                if user and user.username
-                else "N/A"
+            user_mention = (
+                user.mention
+                if user
+                else "Anonymous"
             )
 
-            if user:
-                first_name = user.first_name or ""
-                last_name = user.last_name or ""
-
-                full_name = (
-                    f"{first_name} {last_name}".strip()
-                    or "N/A"
-                )
-            else:
-                full_name = "Anonymous"
-
             text = (
-                "● Bᴏᴛ Rᴇᴍᴏᴠᴇᴅ Lᴏɢ\n\n"
-                f"● Cʜᴀᴛ: {chat_id} | {chat_title}\n"
-                f"● Iᴅ: {user_id}\n"
-                f"● Nᴀᴍᴇ: {username} | {full_name}"
+                f"<u><b>● ʙᴏᴛ ʀᴇᴍᴏᴠᴇᴅ ʟᴏɢ</b></u>\n\n"
+                f"<b>● ᴄʜᴀᴛ:</b> "
+                f"<code>{chat_id}</code> | {chat_title}\n"
+                f"<b>● ʙʏ:</b> "
+                f"<code>{user_id}</code> | {user_mention}"
             )
 
             await app.send_message(
@@ -321,5 +208,5 @@ class Utilities:
                 text=text,
             )
 
-        except Exception as e:
-            print(f"LEFT LOG ERROR: {e}")
+        except Exception:
+            pass
