@@ -21,16 +21,16 @@ async def _noop():
 class TgCall(PyTgCalls):
 
     async def _safe_play(self, chat_id, stream, retries=2):
-        """Start a voice-chat stream with retries for transient FFmpeg timeouts."""
+        """Start playback with a small retry window for transient timeouts."""
         last_error = None
         for attempt in range(retries + 1):
             try:
-                return await super().play(chat_id=chat_id, stream=stream)
+                return await super().play(chat_id, stream=stream, config=types.GroupCallConfig(auto_start=True))
             except (TimeoutError, asyncio.TimeoutError) as exc:
                 last_error = exc
                 if attempt >= retries:
                     raise
-                await asyncio.sleep(0.35 * (attempt + 1))
+                await asyncio.sleep(0.25 * (attempt + 1))
         if last_error:
             raise last_error
 
@@ -184,8 +184,7 @@ class TgCall(PyTgCalls):
         )
 
         if not media.file_path:
-            if message:
-                await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
+            await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
             return await self.stop(chat_id)
 
         # Auto-reconnect if the download API's connection drops mid-stream
@@ -355,70 +354,19 @@ class TgCall(PyTgCalls):
         await self.play_media(chat_id, msg, media)
 
 
-    async def _normalize_autoplay_track(self, value, chat_id: int, video: bool = False):
-        """Convert autoplay provider output into the project's Track object."""
-        if value is None:
-            return None
-        if hasattr(value, "id") and getattr(value, "id", None):
-            return value
-        if not isinstance(value, str):
-            return None
-
-        raw = value.strip()
-        if not raw:
-            return None
-
-        # Providers sometimes return a URL/video-id instead of Track.
-        search_value = raw
-        match = re.search(
-            r"(?:v=|youtu\.be/|youtube\.com/shorts/)([A-Za-z0-9_-]{11})",
-            raw,
-        )
-        if match:
-            search_value = match.group(1)
-
-        try:
-            result = await yt.search(search_value, chat_id, video)
-        except TypeError:
-            try:
-                result = await yt.search(search_value, chat_id)
-            except Exception as e:
-                logger.warning(f"[_normalize_autoplay_track] search failed: {e!r}")
-                return None
-        except Exception as e:
-            logger.warning(f"[_normalize_autoplay_track] search failed: {e!r}")
-            return None
-
-        if hasattr(result, "id") and getattr(result, "id", None):
-            return result
-        if isinstance(result, (list, tuple)) and result:
-            first = result[0]
-            if hasattr(first, "id") and getattr(first, "id", None):
-                return first
-        return None
-
-    async def _normalize_autoplay_track(self, value, m_id: int = 0, video: bool = False):
-        """Convert API output into a Track-like object; never pass raw strings onward."""
-        if value is None:
-            return None
-        if isinstance(value, Track):
-            return value
-        if hasattr(value, "id") and hasattr(value, "title"):
-            return value
-        if isinstance(value, str) and value.strip():
-            try:
-                result = await yt.search(value.strip(), m_id, video=video)
-                if isinstance(result, Track) or (
-                    hasattr(result, "id") and hasattr(result, "title")
-                ):
-                    return result
-            except Exception as e:
-                logger.warning(f"[_normalize_autoplay_track] failed: {e!r}")
-        return None
-
     async def _autoplay_next(self, chat_id: int, finished) -> "Track | None":
-        """Generate one safe autoplay item without stopping on transient API errors."""
-        if not finished:
+        """Ensure one autoplay track is queued and return it.
+
+        This is guarded because StreamEnded and a manual /skip can arrive
+        close together. Re-checking the queue inside the lock prevents two
+        autoplay songs from being inserted for the same finished track.
+        """
+        existing = queue.get_next(chat_id, check=True)
+        if existing:
+            return existing
+
+        video_id = getattr(finished, "id", None)
+        if not video_id:
             return None
 
         lock = self._autoplay_locks.setdefault(chat_id, asyncio.Lock())
@@ -427,161 +375,60 @@ class TgCall(PyTgCalls):
             if existing:
                 return existing
 
-            video_id = getattr(finished, "id", None)
-            if not video_id:
-                return None
-
             history = self.autoplay_history.setdefault(chat_id, set())
             title_history = self.autoplay_title_history.setdefault(chat_id, set())
             history.add(str(video_id))
 
+            # Exclude IDs, while keeping raw titles so movie/album context
+            # can distinguish the same song name from different movies.
             queued = queue.get_queue(chat_id)
-            queued_ids = {
-                str(getattr(item, "id", ""))
-                for item in queued
-                if getattr(item, "id", None)
-            }
+            queued_ids = {str(item.id) for item in queued if getattr(item, "id", None)}
             queued_titles = {
-                str(getattr(item, "title", "") or "").strip().lower()
+                str(getattr(item, "title", "") or "").strip()
                 for item in queued
                 if getattr(item, "title", None)
             }
             exclude = history | queued_ids
             exclude_titles = title_history | queued_titles
-            video_mode = bool(getattr(finished, "video", False))
 
-            # Keep autoplay in the same language/scene as the song that just
-            # finished. This hint is passed to youtube.py, which applies
-            # language-aware search/recommendation filtering.
-            source_title = str(getattr(finished, "title", "") or "")
-            source_channel = str(getattr(finished, "channel_name", "") or "")
-            source_text = f"{source_title} {source_channel}".lower()
-
-            language = None
-            language_rules = {
-                "bhojpuri": (
-                    "bhojpuri", "भोजपुरी", "bhojpuriya", "bhojiwood"
-                ),
-                "hindi": (
-                    "hindi", "हिंदी", "hindustani", "bollywood"
-                ),
-                "punjabi": (
-                    "punjabi", "ਪੰਜਾਬੀ", "punjabi songs"
-                ),
-                "tamil": (
-                    "tamil", "தமிழ்"
-                ),
-                "telugu": (
-                    "telugu", "తెలుగు"
-                ),
-                "marathi": (
-                    "marathi", "मराठी"
-                ),
-                "bengali": (
-                    "bengali", "বাংলা", "bangla"
-                ),
-                "gujarati": (
-                    "gujarati", "ગુજરાતી"
-                ),
-                "kannada": (
-                    "kannada", "ಕನ್ನಡ"
-                ),
-                "malayalam": (
-                    "malayalam", "മലയാളം"
-                ),
-                "odia": (
-                    "odia", "oriya", "ଓଡ଼ିଆ"
-                ),
-            }
-            for lang_name, hints in language_rules.items():
-                if any(hint in source_text for hint in hints):
-                    language = lang_name
-                    break
-
-            track = None
-
-            # Primary stable autoplay interface. Support both new and old
-            # youtube.py signatures.
-            for attempt in range(3):
-                try:
-                    result = await yt.autoplay_track(
-                        video_id,
-                        video=video_mode,
-                        exclude=exclude,
-                        exclude_titles=exclude_titles,
-                        title=getattr(finished, "title", None),
-                        channel_name=getattr(finished, "channel_name", None),
-                        language=language,
-                    )
-                    track = await self._normalize_autoplay_track(
-                        result, chat_id, video_mode
-                    )
-                    if track:
-                        break
-                except TypeError:
-                    try:
-                        result = await yt.autoplay_track(video_id)
-                        track = await self._normalize_autoplay_track(
-                            result, chat_id, video_mode
-                        )
-                        if track:
-                            break
-                    except Exception as e:
-                        logger.warning(
-                            f"[_autoplay_next] legacy attempt {attempt+1}/3 failed: {e!r}"
-                        )
-                except Exception as e:
-                    logger.warning(
-                        f"[_autoplay_next] attempt {attempt+1}/3 failed: {e!r}"
-                    )
-
-                if attempt < 2:
-                    await asyncio.sleep(0.4 * (attempt + 1))
-
-            # Final title fallback.
+            track = await yt.autoplay_track(
+                video_id,
+                video=getattr(finished, "video", False),
+                exclude=exclude,
+                exclude_titles=exclude_titles,
+                title=getattr(finished, "title", None),
+                channel_name=getattr(finished, "channel_name", None),
+            )
             if not track:
-                title = getattr(finished, "title", None)
-                if title:
-                    try:
-                        result = await yt.search(title, chat_id, video=video_mode)
-                        track = await self._normalize_autoplay_track(
-                            result, chat_id, video_mode
-                        )
-                    except Exception as e:
-                        logger.warning(f"[_autoplay_next] title fallback failed: {e!r}")
-
-            if not track or not getattr(track, "id", None):
                 return None
 
-            normalized_title = re.sub(
+            # Never insert the currently playing/queued track again, even if
+            # YouTube returns a different video ID for the same song title.
+            normalized_track_title = re.sub(
                 r"\W+", " ", str(getattr(track, "title", "") or "").lower()
             ).strip()
-
             if str(track.id) in exclude:
                 return None
 
-            if normalized_title and normalized_title in exclude_titles:
-                return None
-
+            # youtube.py already performs fuzzy same-song filtering. Keep a
+            # second guard here so a different video ID cannot slip through
+            # because of a slightly different upload title.
             try:
-                if any(
-                    yt._same_song(track.title, old)
-                    for old in exclude_titles
-                    if old
-                ):
+                if any(yt._same_song(track.title, old) for old in exclude_titles if old):
                     return None
             except Exception:
-                pass
+                if normalized_track_title and normalized_track_title in exclude_titles:
+                    return None
 
             history.add(str(track.id))
-            if normalized_title:
-                title_history.add(normalized_title)
+            if normalized_track_title:
+                title_history.add(normalized_track_title)
             if getattr(track, "title", None):
                 title_history.add(track.title)
-
             track.user = "Autoplay"
             queue.add(chat_id, track)
             return track
+
 
     async def play_next(self, chat_id: int) -> None:
         # Always wait for an in-progress transition instead of silently
@@ -598,6 +445,16 @@ class TgCall(PyTgCalls):
 
         finished = queue.get_current(chat_id)
         media = queue.get_next(chat_id)
+
+        # If no item has been queued yet, cancel a stale prefetch task before
+        # resolving the next song. Otherwise /skip can wait behind a slow RD
+        # request even though it should move immediately. _autoplay_next has
+        # its own per-chat lock, so concurrent transitions remain safe.
+        if not media:
+            prefetch_task = self._prefetch_tasks.get(chat_id)
+            if prefetch_task and not prefetch_task.done():
+                prefetch_task.cancel()
+                self._prefetch_tasks.pop(chat_id, None)
 
         # If there is no queued item, generate the autoplay item before
         # accessing media.message_id.
@@ -624,13 +481,14 @@ class TgCall(PyTgCalls):
         # track is playing. Reuse that same preparation instead of showing
         # the old "HOLD / DOWNLOADING NEXT MEDIA" message at every transition.
         prefetch_task = self._prefetch_tasks.get(chat_id)
+        # A manual /skip must never sit behind a slow YouTube recommendation or
+        # RD-mix request. The queue is authoritative; if prefetch has already
+        # produced a track, it is reused. Otherwise cancel the stale task and
+        # resolve the next track directly below. Automatic StreamEnded is also
+        # safe because _autoplay_next is protected by its per-chat lock.
         if prefetch_task and not prefetch_task.done():
-            try:
-                await prefetch_task
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.warning(f"[play_next] prefetch failed for chat {chat_id}: {e!r}")
+            prefetch_task.cancel()
+            self._prefetch_tasks.pop(chat_id, None)
 
         if not media.file_path:
             media.file_path = await yt.stream_url(media.id, video=media.video)

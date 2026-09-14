@@ -11,7 +11,7 @@ from ArchonMusic import logger, config
 from ArchonMusic.helpers import Track, utils
 
 RITESH_API_URL = os.environ.get("API_URL", "https://web.riteshyt.in").rstrip("/")
-RITESH_API_KEY = os.environ.get("API_KEY", "riteshfreea6901be19d3f420aad766250")
+RITESH_API_KEY = os.environ.get("API_KEY", "")
 
 SHRUTI_API_URL = os.environ.get("SHRUTI_API_URL", "https://shrutibots.site").rstrip("/")
 SHRUTI_API_KEY = os.environ.get("SHRUTI_API_KEY", "")
@@ -486,7 +486,7 @@ class YouTube:
         try:
             info = await asyncio.wait_for(
                 loop.run_in_executor(None, self._extract_related, video_id),
-                timeout=20,
+                timeout=5,
             )
         except asyncio.TimeoutError:
             logger.warning(f"[Autoplay] Mix fetch timed out for {video_id}.")
@@ -653,57 +653,19 @@ class YouTube:
         return None
 
     @classmethod
-    def _language_matches(
-        cls,
-        language_hint: str | None,
-        title: str = "",
-        channel: str = "",
-        query: str = "",
-    ) -> bool:
-        """Keep autoplay in the requested language without rejecting neutral YouTube metadata.
+    def _language_matches(cls, language_hint: str | None, title: str = "", channel: str = "", query: str = "") -> bool:
+        """Keep autoplay in the requested language without rejecting neutral metadata.
 
-        YouTube search results often omit the language from the title/channel.
-        Therefore:
-        - explicit conflicting language -> reject
-        - explicit requested language -> accept
-        - neutral metadata -> accept when the search query is language-specific
+        YouTube often omits the language from Romanized Hindi/Bhojpuri titles.
+        Explicitly conflicting language markers are rejected; neutral candidates
+        are accepted when the original search query already established the language.
         """
         if not language_hint:
             return True
-
-        requested = str(language_hint).casefold().strip()
         detected = cls._detect_language_hint(title=title, channel=channel)
-
-        if detected:
-            return detected.casefold() == requested
-
-        # No language marker in metadata. If the query was explicitly for the
-        # requested language/scene, let the search engine's relevance decide.
-        q = str(query or "").casefold()
-        language_terms = {
-            "hindi": ["hindi", "bollywood", "हिंदी"],
-            "bhojpuri": ["bhojpuri", "भोजपुरी", "bhojpuriya"],
-            "punjabi": ["punjabi", "ਪੰਜਾਬੀ"],
-            "tamil": ["tamil", "தமிழ்"],
-            "telugu": ["telugu", "తెలుగు"],
-            "marathi": ["marathi", "मराठी"],
-            "bengali": ["bengali", "bangla", "বাংলা"],
-            "gujarati": ["gujarati", "ગુજરાતી"],
-            "kannada": ["kannada", "ಕನ್ನಡ"],
-            "malayalam": ["malayalam", "മലയാളം"],
-            "odia": ["odia", "oriya", "ଓଡ଼ିଆ"],
-            "assamese": ["assamese", "অসমীয়া"],
-            "rajasthani": ["rajasthani", "राजस्थानी"],
-            "haryanvi": ["haryanvi", "हरियाणवी"],
-            "garhwali": ["garhwali", "गढ़वाली"],
-            "kumaoni": ["kumaoni", "कुमाऊंनी"],
-            "konkani": ["konkani", "कोंकणी"],
-            "sindhi": ["sindhi", "سنڌي"],
-            "nepali": ["nepali", "नेपाली"],
-            "urdu": ["urdu", "اردو"],
-        }
-        terms = language_terms.get(requested, [requested])
-        return any(term in q for term in terms)
+        if not detected:
+            return bool(query and language_hint)
+        return detected.casefold() == language_hint.casefold()
 
     @staticmethod
     def _is_compilation_or_long_mix(title: str, duration_sec: int) -> bool:
@@ -749,36 +711,12 @@ class YouTube:
         if channel:
             queries.append(f"{channel} songs")
         if language_hint:
-            # Explicit language/scene query is the important signal when
-            # YouTube metadata itself does not contain a language label.
-            lang_alias = {
-                "hindi": "Hindi Bollywood",
-                "bhojpuri": "Bhojpuri",
-                "punjabi": "Punjabi",
-                "tamil": "Tamil",
-                "telugu": "Telugu",
-                "marathi": "Marathi",
-                "bengali": "Bengali Bangla",
-                "gujarati": "Gujarati",
-                "kannada": "Kannada",
-                "malayalam": "Malayalam",
-                "odia": "Odia Oriya",
-                "assamese": "Assamese",
-                "rajasthani": "Rajasthani",
-                "haryanvi": "Haryanvi",
-                "garhwali": "Garhwali",
-                "kumaoni": "Kumaoni",
-                "konkani": "Konkani",
-                "sindhi": "Sindhi",
-                "nepali": "Nepali",
-                "urdu": "Urdu",
-            }.get(language_hint.casefold(), language_hint)
+            # Explicit language terms make Romanized regional music searchable even
+            # when the current YouTube title/channel contains no language label.
             if context:
-                queries.append(f"{context} {lang_alias} songs")
-            if title:
-                queries.append(f"{title} {lang_alias} song")
-            if channel:
-                queries.append(f"{channel} {lang_alias} songs")
+                queries.append(f"{context} {language_hint} song")
+            elif title:
+                queries.append(f"{title} {language_hint} song")
 
         # Always keep a useful title/channel fallback even if the language
         # detector did not recognize the query.
@@ -870,7 +808,7 @@ class YouTube:
         if language_hint:
             candidates = [
                 c for c in candidates
-                if self._language_matches(language_hint, c.title or "", c.channel_name or "", query=" ".join(queries))
+                if self._language_matches(language_hint, c.title or "", c.channel_name or "", query=context)
             ]
             if not candidates:
                 logger.warning(f"[Autoplay] No strict {language_hint} candidate found.")
@@ -891,6 +829,79 @@ class YouTube:
 
         candidates.sort(key=score, reverse=True)
         return candidates[0]
+
+    async def _related_broad_language(
+        self, current: Track, played: set[str], played_titles: set[str],
+        language_hint: str | None, context_query: str | None = None,
+    ) -> Track | None:
+        """Last search fallback used when title-specific recommendations are empty.
+
+        This intentionally avoids RD mixes: on cloud/Heroku IPs RD can return HTTP
+        403. A broad language/artist search keeps autoplay alive instead of ending
+        after one or two songs.
+        """
+        language = (language_hint or "").strip()
+        title = (current.title or "").strip()
+        channel = (current.channel_name or "").strip()
+        if not language and not channel and not title:
+            return None
+
+        if language and channel:
+            query = f"{language} {channel} songs"
+        elif language:
+            query = f"{language} songs"
+        elif channel:
+            query = f"{channel} songs"
+        else:
+            query = f"{title} similar songs"
+
+        try:
+            results = await VideosSearch(query, limit=30).next()
+        except Exception as e:
+            logger.warning(f"[Autoplay] Broad search failed for {query!r}: {e!r}")
+            return None
+
+        played_ids = {str(x) for x in played}
+        blocked_titles = {self._norm_title(x) for x in played_titles if x}
+        for data in (results or {}).get("result", []):
+            eid = str(data.get("id") or "").strip()
+            if not eid or eid in played_ids:
+                continue
+            result_title = str(data.get("title") or "Unknown").strip()
+            if not result_title or self._same_song(result_title, current.title or ""):
+                continue
+            if any(self._same_song(result_title, old) for old in blocked_titles if old):
+                continue
+            lower = result_title.lower()
+            blocked = ("remix", "mashup", "medley", "slowed", "speed up", "sped up",
+                       "lofi", "nightcore", "bass boosted", "8d audio", "cover",
+                       "live", "karaoke", "reaction", "shorts", "status video")
+            if any(x in lower for x in blocked):
+                continue
+            duration_str = data.get("duration")
+            duration_sec = utils.to_seconds(duration_str) if duration_str else 0
+            if not duration_sec or duration_sec > config.DURATION_LIMIT:
+                continue
+            if self._is_compilation_or_long_mix(result_title, duration_sec):
+                continue
+            candidate_channel = ((data.get("channel") or {}).get("name")
+                                 if isinstance(data.get("channel"), dict) else "") or "YouTube"
+            # Neutral Romanized titles are allowed; explicit conflicting languages are not.
+            if language and not self._language_matches(language, result_title, candidate_channel, query=query):
+                continue
+            thumbs = data.get("thumbnails") or []
+            thumbnail = (thumbs[-1].get("url") or "").split("?")[0] if thumbs else None
+            track = Track(
+                id=eid, channel_name=candidate_channel, duration=duration_str,
+                duration_sec=duration_sec, title=result_title[:80], thumbnail=thumbnail,
+                url=data.get("link"), view_count=(data.get("viewCount") or {}).get("short")
+                if isinstance(data.get("viewCount"), dict) else data.get("viewCount"),
+                video=False,
+            )
+            if context_query:
+                self.track_context[eid] = context_query
+            return track
+        return None
 
     async def get_related(
         self,
@@ -917,11 +928,22 @@ class YouTube:
         related = await self._related_from_search(
             current, played, played_titles, context_query=context_query
         )
-        # Do not retry with context_query=None: that can silently drop the
-        # user's selected language and switch the autoplay language.
         if related:
             if related.id and context_query:
                 self.track_context[str(related.id)] = context_query
+            return related
+
+        # Second-stage search: broaden to the same language/artist instead of
+        # falling straight into RD, which commonly returns HTTP 403 on Heroku.
+        language_hint = self._detect_language_hint(
+            context_query or self.track_context.get(str(current.id), ""),
+            current.title or "",
+            current.channel_name or "",
+        )
+        related = await self._related_broad_language(
+            current, played, played_titles, language_hint, context_query=context_query
+        )
+        if related:
             return related
 
         logger.info(
