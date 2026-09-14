@@ -14,7 +14,7 @@ from ArchonMusic import logger
 from ArchonMusic.helpers import Track, utils
 
 API1_URL = os.getenv("API_URL", "https://web.riteshyt.in").rstrip("/")
-API1_KEY = os.getenv("API_KEY", "")
+API1_KEY = os.getenv("API_KEY", "riteshfreea6901be19d3f420aad766250")
 
 API2_URL = os.getenv("SHRUTI_API_URL", "https://shrutibots.site").rstrip("/")
 API2_KEY = os.getenv("SHRUTI_API_KEY", "")
