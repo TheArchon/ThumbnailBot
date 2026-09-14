@@ -25,11 +25,11 @@ from ArchonMusic.helpers import Track, utils
 # 1. Shruti
 # 2. Ritesh
 # 3. yt-dlp (last resort)
-SHRUTI_API_URL = os.getenv("SHRUTI_API_URL", "https://shrutibots.site").rstrip("/")
+SHRUTI_API_URL = os.getenv("SHRUTI_API_URL", "https://api01.shrutibots.site").rstrip("/")
 SHRUTI_API_KEY = os.getenv("SHRUTI_API_KEY", "").strip()
 
 RITESH_API_URL = os.getenv("API_URL", "https://web.riteshyt.in").rstrip("/")
-RITESH_API_KEY = os.getenv("API_KEY", "riteshfreea6901be19d3f420aad766250").strip()
+RITESH_API_KEY = os.getenv("API_KEY", "").strip()
 
 # Backward-compatible aliases used by older code in this module.
 API2_URL = SHRUTI_API_URL
@@ -827,36 +827,51 @@ class YouTube:
         return None
 
     async def stream_url(self, video_id: str, video: bool = False) -> str | None:
-        """Return the fastest playable source available.
+        """Return a playable media URL as fast as possible.
 
-        Results are cached and concurrent requests for the same track share
-        one task. API-provided direct URLs are returned immediately; raw API
-        media is saved locally; yt-dlp remains the final fallback.
+        Fast path: return the Shruti/Ritesh HTTP media endpoint directly so
+        PyTgCalls/FFmpeg can begin reading the response immediately instead of
+        waiting for the complete MP3/MP4 to be downloaded to disk.
         """
-        vid = self._video_id(video_id) or str(video_id).strip()
+        vid = self._video_id(video_id) or str(video_id or "").strip()
         if not vid:
             return None
-        key = f"{vid}:{1 if video else 0}"
 
-        cached = self._stream_cache.get(key)
+        # Reuse an already-resolved stream.
+        cached = self._stream_cache.get((vid, bool(video)))
         if cached:
-            if cached.startswith("http") or (os.path.exists(cached) and os.path.getsize(cached) > 1024):
-                return cached
-            self._stream_cache.pop(key, None)
+            return cached
 
-        task = self._stream_tasks.get(key)
-        if task is None:
-            task = asyncio.create_task(self.download(vid, video=video))
-            self._stream_tasks[key] = task
+        typ = "video" if video else "audio"
+        youtube_url = f"https://www.youtube.com/watch?v={vid}"
 
-        try:
-            result = await task
-            if result:
-                self._stream_cache[key] = result
-            return result
-        finally:
-            if self._stream_tasks.get(key) is task:
-                self._stream_tasks.pop(key, None)
+        # PRIMARY: Shruti direct streaming endpoint. The current API returns
+        # media bytes from /download, so FFmpeg can consume this URL directly.
+        if SHRUTI_API_KEY:
+            params = urllib.parse.urlencode({
+                "url": vid,
+                "type": typ,
+                "api_key": SHRUTI_API_KEY,
+            })
+            direct = f"{SHRUTI_API_URL}/download?{params}"
+            self._stream_cache[(vid, bool(video))] = direct
+            logger.info(f"[Shruti] Direct stream URL ready: {vid}")
+            return direct
+
+        # FALLBACK: Ritesh optimized media endpoint.
+        if RITESH_API_KEY:
+            ext = "mp4" if video else "mp3"
+            direct = (
+                f"{RITESH_API_URL}/downloads/{RITESH_API_KEY}/"
+                f"youtube.com/{vid}.{ext}"
+            )
+            self._stream_cache[(vid, bool(video))] = direct
+            logger.info(f"[Ritesh] Direct stream URL ready: {vid}")
+            return direct
+
+        # LAST RESORT: local yt-dlp download.
+        logger.warning(f"[YouTube] API keys unavailable; using yt-dlp for {vid}")
+        return await _ytdlp_download(vid, video=video)
 
     async def close(self):
         if self._client and not self._client.closed:
