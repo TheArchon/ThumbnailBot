@@ -271,6 +271,35 @@ class TgCall(PyTgCalls):
                 await asyncio.sleep(0.5)
         return None
 
+    async def _play_autoplay_silent(self, chat_id: int, media: Media | Track) -> None:
+        """Play an autoplay track without sending/editing any Telegram message."""
+        if not media.file_path:
+            media.file_path = await yt.download(media.id, video=media.video)
+        if not media.file_path:
+            logger.warning(f"[Autoplay] silent playback download failed for {media.id}")
+            return await self.stop(chat_id)
+
+        client = await db.get_assistant(chat_id)
+        ffmpeg_params = "-re " + ("-vn" if not media.video else "")
+        stream = types.MediaStream(
+            media_path=media.file_path,
+            audio_parameters=types.AudioQuality.HIGH,
+            video_parameters=types.VideoQuality.HD_720p,
+            audio_flags=types.MediaStream.Flags.REQUIRED,
+            video_flags=(
+                types.MediaStream.Flags.AUTO_DETECT
+                if media.video
+                else types.MediaStream.Flags.IGNORE
+            ),
+            ffmpeg_parameters=ffmpeg_params.strip() or None,
+        )
+        await client.play(chat_id, stream)
+        media.played_at = time.time()
+        media.time = 1
+        await db.add_call(chat_id)
+        self.prefetch_tasks[chat_id] = asyncio.create_task(self._prepare_next(chat_id))
+
+
     async def play_next(self, chat_id: int, skip_user: str | None = None) -> None:
         if loop := await db.get_loop(chat_id):
             await db.set_loop(chat_id, loop - 1)
@@ -288,13 +317,15 @@ class TgCall(PyTgCalls):
         if not media:
             if await db.get_autoplay(chat_id):
                 if current and isinstance(current, Track):
-                    msg = None
-                    if skip_user:
-                        msg = await app.send_message(
-                            chat_id, _lang["autoplay_skip"].format(skip_user)
-                        )
-                    else:
-                        msg = await app.send_message(chat_id, _lang.get("autoplay_next", "▶️ Autoplay: finding next song..."))
+                    # Autoplay must be silent: do not send an extra reply/message.
+                    # play_media() only needs a Message object for its existing UI flow.
+                    msg = current_message = None
+                    if current and current.message_id:
+                        try:
+                            current_message = await app.get_messages(chat_id, current.message_id)
+                        except Exception:
+                            current_message = None
+                    msg = current_message
 
                     # Set max duration for autoplay tracks based on current song
                     # but capped at 15 minutes to avoid extremely long tracks
@@ -322,13 +353,15 @@ class TgCall(PyTgCalls):
                                     pass
                                 return await self.play_next(chat_id)
 
-                        media.message_id = msg.id
-                        return await self.play_media(chat_id, msg, media)
+                        if msg:
+                            media.message_id = msg.id
+                            return await self.play_media(chat_id, msg, media)
+
+                        # No message to edit; play directly without creating a reply.
+                        return await self._play_autoplay_silent(chat_id, media)
                     else:
                         await self.stop(chat_id)
-                        if msg:
-                            return await msg.edit_text(_lang["queue_finished"])
-                        return await app.send_message(chat_id, _lang["queue_finished"])
+                        return
                 else:
                     await self.stop(chat_id)
                     return await app.send_message(chat_id, _lang["queue_finished"])
