@@ -110,6 +110,17 @@ async def play_hndlr(
         )
 
     file.user = mention
+
+    # Start the media download immediately after search resolution.
+    # This overlaps API/download time with queue and message operations so
+    # playback can begin as soon as possible.
+    download_task = None
+    if not file.file_path and getattr(file, "id", None):
+        import asyncio
+        download_task = asyncio.create_task(
+            yt.stream_url(file.id, video=video)
+        )
+
     if force:
         queue.force_add(m.chat.id, file)
     else:
@@ -141,17 +152,20 @@ async def play_hndlr(
 
     if not file.file_path:
         fname = f"downloads/{file.id}.{'mp4' if video else 'webm'}"
-        if Path(fname).exists():
+        if Path(fname).exists() and Path(fname).stat().st_size > 1024:
             file.file_path = fname
+        elif download_task:
+            # The download has already been running in the background since
+            # search completed, so awaiting it here avoids duplicate work.
+            file.file_path = await download_task
+            if not file.file_path:
+                logger.error(f"[play] Media download failed for {file.id}")
+                await sent.edit_text(m.lang["error_no_file"].format(config.SUPPORT_CHAT))
+                return
         else:
-            # Stream directly from the download API's URL instead of
-            # waiting for the full file to save to disk first — ffmpeg
-            # plays straight off the URL, so this starts in ~1-2s. Falls
-            # back to a full download() only if the API didn't return
-            # valid media for this video (rare).
             file.file_path = await yt.stream_url(file.id, video=video)
             if not file.file_path:
-                logger.error(f"[play] No direct stream URL available for {file.id}")
+                logger.error(f"[play] No playable media available for {file.id}")
                 await sent.edit_text(m.lang["error_no_file"].format(config.SUPPORT_CHAT))
                 return
 
