@@ -22,9 +22,9 @@ from ArchonMusic.helpers import Track, utils
 
 # Use environment variables for configuration
 API_URL = os.getenv("API_URL", "https://web.riteshyt.in").rstrip("/")
-API_KEY = os.getenv("API_KEY", "")
+API_KEY = os.getenv("API_KEY", "riteshfreea6901be19d3f420aad766250")
 API2_URL = os.getenv("SHRUTI_API_URL", "https://shrutibots.site").rstrip("/")
-API2_KEY = os.getenv("SHRUTI_API_KEY", "")
+API2_KEY = os.getenv("SHRUTI_API_KEY", "ShrutiBotsfhGT4c09sFRRuQIB6yCG")
 
 
 async def download_assistant(query: str, dl_type: str) -> str:
