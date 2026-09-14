@@ -250,20 +250,7 @@ class TgCall(PyTgCalls):
             except Exception:
                 pass
         _lang = await lang.get_lang(chat_id)
-        msg = await app.send_message(chat_id=chat_id, text=_lang["play_again"])
-        if msg:
-            try:
-                text = (
-                    _lang["play_skipped"].format(skip_user)
-                    + "\n\n"
-                    + _lang["play_next"]
-                    if skip_user
-                    else _lang["play_next"]
-                )
-                await msg.edit_text(text)
-            except Exception:
-                pass
-
+        msg = await app.send_message(chat_id=chat_id, text=_lang.get("loading", "⏳ Loading..."))
         media.message_id = msg.id
         await self.play_media(chat_id, msg, media)
 
@@ -280,18 +267,16 @@ class TgCall(PyTgCalls):
             except Exception:
                 pass
 
-        # When /skip is used, immediately show a loading message while the
-        # next track is being prepared. This keeps the chat responsive even
-        # when the next track needs to be downloaded.
-        msg = None
-        if skip_user:
-            msg = await app.send_message(chat_id=chat_id, text=_lang["loading"])
-
         media = queue.get_next(chat_id)
         if not media:
             if await db.get_autoplay(chat_id):
                 if current and isinstance(current, Track):
-                    if not msg:
+                    msg = None
+                    if skip_user:
+                        msg = await app.send_message(
+                            chat_id, _lang["autoplay_skip"].format(skip_user)
+                        )
+                    else:
                         msg = await app.send_message(chat_id, _lang["autoplay_next"])
 
                     # Set max duration for autoplay tracks based on current song
@@ -332,35 +317,38 @@ class TgCall(PyTgCalls):
                     else:
                         await self.stop(chat_id)
                         if msg:
-                            return await msg.edit_text(_lang["queue_finished"])
-                        return await app.send_message(chat_id, _lang["queue_finished"])
+                            return await msg.edit_text(_lang.get("queue_finished", "Queue finished."))
+                        return await app.send_message(chat_id, _lang.get("queue_finished", "Queue finished."))
                 else:
                     await self.stop(chat_id)
-                    return await app.send_message(chat_id, _lang["queue_finished"])
+                    return await app.send_message(chat_id, _lang.get("queue_finished", "Queue finished."))
             else:
                 await self.stop(chat_id)
                 if skip_user:
                     await app.send_message(
                         chat_id, _lang["play_skipped"].format(skip_user)
                     )
-                return await app.send_message(chat_id, _lang["queue_finished"])
+                return await app.send_message(chat_id, _lang.get("queue_finished", "Queue finished."))
 
         # If we reached here, media was already retrieved by queue.get_next above
 
-        if media.message_id and not msg:
+        msg = None
+        if media.message_id:
             try:
                 msg = await app.get_messages(chat_id, media.message_id)
                 if not msg or not msg.id or msg.empty:
                     msg = None
+                else:
+                    try:
+                        text = _lang.get("loading", "⏳ Loading...")
+                        await msg.edit_text(text)
+                    except Exception:
+                        pass
             except Exception:
                 msg = None
 
         if not msg:
-            text = (
-                _lang["play_skipped"].format(skip_user) + "\n\n" + _lang["play_next"]
-                if skip_user
-                else _lang["play_next"]
-            )
+            text = _lang.get("loading", "⏳ Loading...")
             msg = await app.send_message(chat_id=chat_id, text=text)
 
         if not media.file_path:
