@@ -21,10 +21,21 @@ from ArchonMusic import logger
 from ArchonMusic.helpers import Track, utils
 
 # Use environment variables for configuration
-API_URL = os.getenv("API_URL", "https://web.riteshyt.in").rstrip("/")
-API_KEY = os.getenv("API_KEY", "riteshfreea6901be19d3f420aad766250")
-API2_URL = os.getenv("SHRUTI_API_URL", "https://shrutibots.site").rstrip("/")
-API2_KEY = os.getenv("SHRUTI_API_KEY", "ShrutiBotsfhGT4c09sFRRuQIB6yCG")
+# Provider priority:
+# 1. Shruti
+# 2. Ritesh
+# 3. yt-dlp (last resort)
+SHRUTI_API_URL = os.getenv("SHRUTI_API_URL", "https://shrutibots.site").rstrip("/")
+SHRUTI_API_KEY = os.getenv("SHRUTI_API_KEY", "").strip()
+
+RITESH_API_URL = os.getenv("API_URL", "https://web.riteshyt.in").rstrip("/")
+RITESH_API_KEY = os.getenv("API_KEY", "").strip()
+
+# Backward-compatible aliases used by older code in this module.
+API2_URL = SHRUTI_API_URL
+API2_KEY = SHRUTI_API_KEY
+API_URL = RITESH_API_URL
+API_KEY = RITESH_API_KEY
 
 
 async def download_assistant(query: str, dl_type: str) -> str:
@@ -98,6 +109,25 @@ class YouTube:
     def invalid(self, url: str) -> bool:
         return bool(re.match(self.iregex, url))
 
+    @staticmethod
+    def _video_id(value: str) -> str:
+        if not value:
+            return ""
+        value = str(value).strip()
+        if re.fullmatch(r"[A-Za-z0-9_-]{11}", value):
+            return value
+        patterns = (
+            r"(?:v=)([A-Za-z0-9_-]{11})",
+            r"(?:youtu\.be/)([A-Za-z0-9_-]{11})",
+            r"(?:shorts/)([A-Za-z0-9_-]{11})",
+            r"(?:embed/)([A-Za-z0-9_-]{11})",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, value)
+            if match:
+                return match.group(1)
+        return ""
+
     def _clean_link(self, link: str):
         if not link:
             return ""
@@ -111,59 +141,107 @@ class YouTube:
         return link
 
     async def search(self, query: str, m_id: int, video: bool = False) -> Track | None:
-        client = await self.get_client()
-        original_query = str(query).strip()
-        params = {"query": query, "limit": 1}
-        if API_KEY:
-            params["api_key"] = API_KEY
-        try:
-            async with client.get(f"{API_URL}/search", params=params) as response:
-                if response.status == 200:
-                    result_data = await response.json()
-                    result = result_data.get("result")
-                    if result:
-                        data = result[0]
-                        if data.get("id"):
-                            self.track_context[str(data.get("id"))] = original_query
-                        return Track(
-                            id=data.get("id"),
-                            channel_name=data.get("channel", {}).get("name"),
-                            duration=data.get("duration"),
-                            duration_sec=utils.to_seconds(data.get("duration")),
-                            message_id=m_id,
-                            title=data.get("title")[:25],
-                            thumbnail=data.get("thumbnails", [{}])[-1]
-                            .get("url")
-                            .split("?")[0],
-                            url=data.get("link"),
-                            view_count=data.get("viewCount", {}).get("short"),
-                            video=video,
-                        )
-        except Exception as e:
-            logger.error(f"Error in search from API: {e}")
+        """Search YouTube with Shruti first, then Ritesh, then py_yt."""
+        if not query:
+            return None
 
-        # Fallback to existing search if API fails
+        original_query = str(query).strip()
+        client = await self.get_client()
+
+        # Shruti -> Ritesh
+        for provider, base, key in (
+            ("Shruti", SHRUTI_API_URL, SHRUTI_API_KEY),
+            ("Ritesh", RITESH_API_URL, RITESH_API_KEY),
+        ):
+            if not base:
+                continue
+            params = {"query": original_query, "limit": 1}
+            if key:
+                params["api_key"] = key
+            try:
+                async with client.get(
+                    f"{base}/search", params=params, timeout=12
+                ) as response:
+                    if response.status != 200:
+                        logger.warning(
+                            f"[{provider}] Search HTTP {response.status}"
+                        )
+                        continue
+                    result_data = await response.json(content_type=None)
+                    result = (
+                        result_data.get("result")
+                        or result_data.get("results")
+                        or result_data.get("videos")
+                        or result_data.get("data")
+                        or []
+                    )
+                    if isinstance(result, dict):
+                        result = (
+                            result.get("result")
+                            or result.get("results")
+                            or result.get("videos")
+                            or [result]
+                        )
+                    if not isinstance(result, list) or not result:
+                        continue
+
+                    data = result[0] or {}
+                    vid = data.get("id") or data.get("videoId")
+                    if not vid:
+                        continue
+
+                    channel = data.get("channel") or {}
+                    if isinstance(channel, dict):
+                        channel = channel.get("name") or ""
+                    thumbs = data.get("thumbnails") or []
+                    thumb = ""
+                    if isinstance(thumbs, list) and thumbs:
+                        last = thumbs[-1]
+                        thumb = (
+                            last.get("url", "")
+                            if isinstance(last, dict)
+                            else str(last)
+                        )
+
+                    track = Track(
+                        id=str(vid),
+                        channel_name=channel,
+                        duration=data.get("duration"),
+                        duration_sec=utils.to_seconds(
+                            data.get("duration") or "00:00"
+                        ),
+                        message_id=m_id,
+                        title=str(data.get("title") or "Unknown")[:25],
+                        thumbnail=thumb.split("?")[0],
+                        url=data.get("link")
+                        or data.get("url")
+                        or f"{self.base}{vid}",
+                        view_count=(
+                            data.get("viewCount", {}).get("short")
+                            if isinstance(data.get("viewCount"), dict)
+                            else data.get("viewCount", "")
+                        ),
+                        video=video,
+                    )
+                    self.track_context[str(track.id)] = original_query
+                    return track
+            except Exception as e:
+                logger.warning(f"[{provider}] Search failed: {e}")
+
+        # Final metadata/search fallback.
         try:
-            _search = VideosSearch(query, limit=1, with_live=False)
-            results = await _search.next()
-            if results and results["result"]:
+            search = VideosSearch(original_query, limit=1, with_live=False)
+            results = await search.next()
+            if results and results.get("result"):
                 data = results["result"][0]
-                if data.get("id"):
-                    self.track_context[str(data.get("id"))] = original_query
-                return Track(
-                    id=data.get("id"),
-                    channel_name=data.get("channel", {}).get("name"),
-                    duration=data.get("duration"),
-                    duration_sec=utils.to_seconds(data.get("duration")),
-                    message_id=m_id,
-                    title=data.get("title")[:25],
-                    thumbnail=data.get("thumbnails", [{}])[-1].get("url").split("?")[0],
-                    url=data.get("link"),
-                    view_count=data.get("viewCount", {}).get("short"),
-                    video=video,
-                )
-        except Exception:
-            pass
+                track = self._track_from_data(data, video=video)
+                if track:
+                    track.message_id = m_id
+                    self.track_context[str(track.id)] = original_query
+                    return track
+        except Exception as e:
+            logger.warning(f"[py_yt] Search fallback failed: {e}")
+
         return None
 
     async def playlist(
@@ -250,15 +328,27 @@ class YouTube:
             }
 
         client = await self.get_client()
-        params = {"query": link, "dl_type": dl_type, "prefetch": "true"}
-        if API_KEY:
-            params["api_key"] = API_KEY
-        try:
-            # Fire and forget request to the API
-            async with client.get(f"{API_URL}/download", params=params):
-                return True
-        except Exception as e:
-            logger.error(f"Prefetch failed for {link}: {e}")
+        for provider, base, key in (
+            ("Shruti", SHRUTI_API_URL, SHRUTI_API_KEY),
+            ("Ritesh", RITESH_API_URL, RITESH_API_KEY),
+        ):
+            if not base:
+                continue
+            params = {"url": link, "type": dl_type, "prefetch": "true"}
+            if key:
+                params["api_key"] = key
+            try:
+                async with client.get(
+                    f"{base}/download", params=params, timeout=15
+                ) as response:
+                    if response.status == 200:
+                        logger.info(f"[{provider}] Prefetch accepted: {vidid}")
+                        return True
+                    logger.warning(
+                        f"[{provider}] Prefetch HTTP {response.status}"
+                    )
+            except Exception as e:
+                logger.warning(f"[{provider}] Prefetch failed: {e}")
         return False
 
     def _language_hint(self, text: str) -> str | None:
@@ -340,7 +430,7 @@ class YouTube:
 
         seen = {str(video_id)}
         for q in queries:
-            for base, key in ((API_URL, API_KEY), (API2_URL, API2_KEY)):
+            for base, key in ((SHRUTI_API_URL, SHRUTI_API_KEY), (RITESH_API_URL, RITESH_API_KEY)):
                 for data in await self._api_search(base, key, q, 8):
                     tr = self._track_from_data(data, video=video)
                     if not tr or tr.id in seen or not tr.duration_sec:
@@ -383,77 +473,201 @@ class YouTube:
         logger.warning(f"[Autoplay] No candidate found for {video_id} (language={hint})")
         return None
 
-    async def _download_api(self, base: str, key: str, youtube_url: str, video: bool):
+    async def _download_api(
+        self, base: str, key: str, youtube_url: str, video: bool, provider: str
+    ):
+        """Download media from an API and always return a local file path.
+
+        Handles both API styles:
+        - JSON containing a direct media URL
+        - raw binary audio/video response
+
+        This avoids decoding binary media as UTF-8 (the old Shruti failure).
+        """
+        if not base:
+            return None
+
         client = await self.get_client()
         typ = "video" if video else "audio"
+        vid = self._video_id(youtube_url) or str(youtube_url).strip()
+        if not vid:
+            return None
+
+        ext = "mp4" if video else "mp3"
+        os.makedirs("downloads", exist_ok=True)
+        path = os.path.abspath(os.path.join("downloads", f"{vid}.{ext}"))
+
+        if os.path.exists(path) and os.path.getsize(path) > 1024:
+            return path
+
         params = {"url": youtube_url, "type": typ}
         if key:
             params["api_key"] = key
+
         try:
-            async with client.get(f"{base}/download", params=params, timeout=45) as r:
-                if r.status != 200:
-                    logger.warning(f"API {base} /download returned HTTP {r.status}")
+            timeout = aiohttp.ClientTimeout(total=120, connect=12, sock_read=60)
+            async with client.get(
+                f"{base}/download", params=params, timeout=timeout
+            ) as response:
+                if response.status != 200:
+                    logger.warning(
+                        f"[{provider}] /download HTTP {response.status} for {vid}"
+                    )
                     return None
-                content_type = (r.headers.get("Content-Type") or "").lower()
-                body = await r.read()
-                # Some APIs return JSON containing a direct file URL.
-                if "json" in content_type or body[:1] in (b"{", b"["):
+
+                ctype = (
+                    response.headers.get("Content-Type") or ""
+                ).lower().split(";")[0].strip()
+
+                # JSON response: locate a direct media URL.
+                if "json" in ctype or ctype in (
+                    "text/plain",
+                    "text/html",
+                    "application/javascript",
+                ):
+                    raw = await response.read()
                     try:
                         import json
-                        data = json.loads(body.decode("utf-8"))
-                        direct = data.get("url") or data.get("download_url") or data.get("file") or data.get("link")
-                        if direct:
-                            async with client.get(direct, timeout=90) as rr:
-                                if rr.status == 200:
-                                    body = await rr.read()
-                                else:
-                                    return None
-                    except Exception:
+                        data = json.loads(raw.decode("utf-8"))
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        logger.warning(
+                            f"[{provider}] Non-JSON text response for {vid}"
+                        )
                         return None
-                if not body or len(body) < 1024:
-                    return None
-                os.makedirs("downloads", exist_ok=True)
-                ext = "mp4" if video else "mp3"
-                path = os.path.join("downloads", f"{youtube_url.rsplit('=',1)[-1][:11]}.{ext}")
-                with open(path, "wb") as f:
-                    f.write(body)
+
+                    direct = None
+                    if isinstance(data, str) and data.startswith("http"):
+                        direct = data
+                    elif isinstance(data, dict):
+                        for key_name in (
+                            "url",
+                            "download_url",
+                            "stream_url",
+                            "link",
+                            "file",
+                        ):
+                            value = data.get(key_name)
+                            if isinstance(value, str) and value.startswith("http"):
+                                direct = value
+                                break
+                        if not direct:
+                            for nested_name in ("result", "data"):
+                                nested = data.get(nested_name)
+                                if isinstance(nested, dict):
+                                    for key_name in (
+                                        "url",
+                                        "download_url",
+                                        "stream_url",
+                                        "link",
+                                        "file",
+                                    ):
+                                        value = nested.get(key_name)
+                                        if isinstance(value, str) and value.startswith("http"):
+                                            direct = value
+                                            break
+                                if direct:
+                                    break
+
+                    if not direct:
+                        logger.warning(
+                            f"[{provider}] JSON response had no media URL for {vid}"
+                        )
+                        return None
+
+                    async with client.get(direct, timeout=90) as media:
+                        if media.status not in (200, 206):
+                            logger.warning(
+                                f"[{provider}] Direct media HTTP {media.status}"
+                            )
+                            return None
+                        with open(path, "wb") as fh:
+                            async for chunk in media.content.iter_chunked(131072):
+                                if chunk:
+                                    fh.write(chunk)
+                else:
+                    # Raw binary response. NEVER decode this as UTF-8.
+                    with open(path, "wb") as fh:
+                        async for chunk in response.content.iter_chunked(131072):
+                            if chunk:
+                                fh.write(chunk)
+
+            if os.path.exists(path) and os.path.getsize(path) > 1024:
+                logger.info(f"[{provider}] Download successful: {vid}")
                 return path
+
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
-            logger.warning(f"API {base} /download failed: {e}")
-            return None
+            logger.warning(f"[{provider}] Download failed for {vid}: {e}")
+
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            pass
+        return None
 
     async def download(self, video_id: str, video: bool = False) -> str | None:
-        url = self.base + video_id
-        # API 1 -> API 2 -> local yt-dlp fallback.
-        for base, key in ((API_URL, API_KEY), (API2_URL, API2_KEY)):
-            path = await self._download_api(base, key, url, video)
-            if path and os.path.exists(path) and os.path.getsize(path) > 1024:
-                logger.info(f"[Download] Success via {base}: {video_id}")
+        """Download with strict priority: Shruti -> Ritesh -> yt-dlp."""
+        vid = self._video_id(video_id) or str(video_id).strip()
+        if not vid:
+            return None
+
+        url = self.base + vid
+
+        for provider, base, key in (
+            ("Shruti", SHRUTI_API_URL, SHRUTI_API_KEY),
+            ("Ritesh", RITESH_API_URL, RITESH_API_KEY),
+        ):
+            path = await self._download_api(
+                base, key, url, video, provider
+            )
+            if path:
                 return path
 
-        # Last resort: yt-dlp. This may fail on cloud IPs, but it is kept as a fallback.
+        # Last resort: local yt-dlp.
         try:
             import yt_dlp
             os.makedirs("downloads", exist_ok=True)
             ext = "mp4" if video else "mp3"
-            out = os.path.abspath(os.path.join("downloads", f"{video_id}.{ext}"))
+            out = os.path.abspath(os.path.join("downloads", f"{vid}.{ext}"))
             opts = {
-                "outtmpl": out, "noplaylist": True, "quiet": True,
-                "no_warnings": True, "overwrites": False,
-                "format": "bestvideo+bestaudio/best" if video else "bestaudio/best",
+                "outtmpl": out,
+                "noplaylist": True,
+                "quiet": True,
+                "no_warnings": True,
+                "overwrites": False,
+                "format": (
+                    "bestvideo+bestaudio/best"
+                    if video
+                    else "bestaudio/best"
+                ),
                 "merge_output_format": "mp4" if video else None,
+                "socket_timeout": 20,
+                "retries": 2,
             }
-            opts = {k:v for k,v in opts.items() if v is not None}
-            loop = asyncio.get_running_loop()
+            opts = {k: v for k, v in opts.items() if v is not None}
+
             def _run():
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     ydl.download([url])
-            await loop.run_in_executor(None, _run)
+
+            await asyncio.to_thread(_run)
             if os.path.exists(out) and os.path.getsize(out) > 1024:
                 return out
         except Exception as e:
-            logger.warning(f"yt-dlp fallback failed for {video_id}: {e}")
+            logger.warning(f"[yt-dlp] Fallback failed for {vid}: {e}")
+
         return None
+
+    async def stream_url(self, video_id: str, video: bool = False) -> str | None:
+        """Compatibility method required by plugins/play.py.
+
+        `play.py` expects a stream_url() method. The API providers may return
+        either a remote URL or raw media bytes, so the reliable contract here
+        is a playable LOCAL file path. PyTgCalls can consume that path directly.
+        """
+        return await self.download(video_id, video=video)
 
     async def close(self):
         if self._client and not self._client.closed:
