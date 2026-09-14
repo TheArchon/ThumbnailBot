@@ -133,7 +133,7 @@ async def play_hndlr(
             await sent.edit_text(m.lang["play_downloading"])
             file.file_path = await yt.download(file.id, video=video)
 
-    await Kartik.play_media(chat_id=m.chat.id, message=sent, media=file)
+    await ArchonMusic.play_media(chat_id=m.chat.id, message=sent, media=file)
     if not tracks:
         return
     added = playlist_to_queue(m.chat.id, tracks)
