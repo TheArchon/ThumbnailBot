@@ -17,12 +17,12 @@ import urllib.parse
 import aiohttp
 from py_yt import Playlist, Recommendations, VideosSearch
 
-from KartikMusic import logger
-from KartikMusic.helpers import Track, utils
+from ArchonMusic import logger
+from ArchonMusic.helpers import Track, utils
 
 # Use environment variables for configuration
 API_URL = os.getenv("API_URL", "https://web.riteshyt.in").rstrip("/")
-API_KEY = os.getenv("API_KEY", "")
+API_KEY = os.getenv("API_KEY", "riteshfreea6901be19d3f420aad766250")
 # API priority: Shruti -> Ritesh -> py_yt
 SHRUTI_API_URL = os.getenv("SHRUTI_API_URL", "https://api01.shrutibots.site").rstrip("/")
 SHRUTI_API_KEY = os.getenv("SHRUTI_API_KEY", "").strip()
