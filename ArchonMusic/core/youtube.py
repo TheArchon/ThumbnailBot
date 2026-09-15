@@ -824,43 +824,81 @@ class YouTube:
         video_id: str,
         video: bool = False,
         max_duration: int = 0,
+        query: str | None = None,
     ) -> Track | None:
+        """Get an autoplay candidate without depending on one py_yt API.
+
+        Older py_yt releases exposed Recommendations.getRelated(), while
+        newer releases may not.  Autoplay must not stop just because that
+        optional recommendations endpoint is unavailable, so fall back to a
+        normal YouTube search when possible.
+        """
         try:
             from py_yt import Recommendations
 
-            results = await Recommendations.getRelated(
-                video_id
-            )
+            get_related = getattr(Recommendations, "getRelated", None)
+            if get_related:
+                results = await get_related(video_id)
 
-            if isinstance(results, dict):
-                videos = [
-                    r
-                    for r in results.get("result", [])
-                    if r.get("type") == "video"
-                ]
-
-                if max_duration:
+                if isinstance(results, dict):
                     videos = [
-                        v
-                        for v in videos
-                        if utils.to_seconds(
-                            v.get("duration")
-                            or "00:00"
-                        )
-                        <= max_duration
+                        r
+                        for r in results.get("result", [])
+                        if r.get("type") == "video"
+                        and r.get("id") != video_id
                     ]
 
-                if videos:
-                    return self._track_from_data(
-                        random.choice(videos),
-                        0,
-                        video,
-                    )
+                    if max_duration:
+                        videos = [
+                            v
+                            for v in videos
+                            if utils.to_seconds(
+                                v.get("duration") or "00:00"
+                            ) <= max_duration
+                        ]
+
+                    if videos:
+                        track = self._track_from_data(
+                            random.choice(videos),
+                            0,
+                            video,
+                        )
+                        if track:
+                            return track
+            else:
+                logger.info("Recommendations.getRelated unavailable; using search fallback")
 
         except Exception as e:
-            logger.warning(
-                f"Related video lookup failed: {e}"
-            )
+            logger.warning(f"Related video lookup failed: {e}; using search fallback")
+
+        # Compatibility fallback for py_yt versions without Recommendations.
+        # A title/query is preferred; if unavailable, search the current video
+        # URL/id so autoplay still has a chance to continue.
+        search_query = (query or "").strip()
+        if not search_query:
+            search_query = f"YouTube {video_id}"
+
+        try:
+            searcher = VideosSearch(search_query, limit=5, with_live=False)
+            results = await searcher.next()
+            items = results.get("result", []) if isinstance(results, dict) else []
+
+            candidates = []
+            for item in items:
+                item_id = item.get("id")
+                if not item_id or item_id == video_id:
+                    continue
+                duration = utils.to_seconds(item.get("duration") or "00:00")
+                if max_duration and duration > max_duration:
+                    continue
+                track = self._track_from_data(item, 0, video)
+                if track:
+                    candidates.append(track)
+
+            if candidates:
+                return random.choice(candidates)
+        except Exception as e:
+            logger.warning(f"Autoplay search fallback failed for {video_id}: {e}")
 
         return None
 

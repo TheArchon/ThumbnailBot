@@ -76,7 +76,10 @@ class TgCall(PyTgCalls):
                         if isinstance(media, Track):
                             max_duration = min(int(media.duration_sec * 1.5), 900)
                             next_media = await yt.get_related(
-                                media.id, video=media.video, max_duration=max_duration
+                                media.id,
+                                video=media.video,
+                                max_duration=max_duration,
+                                query=getattr(media, "title", None),
                             )
                             if next_media:
                                 queue.add(chat_id, next_media)
@@ -305,7 +308,10 @@ class TgCall(PyTgCalls):
                     if not media:
                         max_duration = min(int(current.duration_sec * 1.5), 900)
                         media = await yt.get_related(
-                            current.id, video=current.video, max_duration=max_duration
+                            current.id,
+                            video=current.video,
+                            max_duration=max_duration,
+                            query=getattr(current, "title", None),
                         )
                         if media:
                             queue.add(chat_id, media)
