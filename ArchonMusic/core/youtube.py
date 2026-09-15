@@ -40,11 +40,6 @@ RITESH_API_KEY = os.getenv("API_KEY", "riteshfreea6901be19d3f420aad766250").stri
 class YouTube:
     def __init__(self):
         self.base = "https://www.youtube.com/watch?v="
-        self.cookies = []
-        self.checked = False
-        self.cookie_dir = "ArchonMusic/cookies"
-        self.warned = False
-
         # Prevent duplicate background prefetches.
         self._recent_prefetches = {}
         self._stream_cache = {}
@@ -169,50 +164,6 @@ class YouTube:
                 )
 
         return None
-
-    # ------------------------------------------------------------------
-    # Cookies
-    # ------------------------------------------------------------------
-    def get_cookies(self):
-        if not self.checked:
-            try:
-                for file in os.listdir(self.cookie_dir):
-                    if file.endswith(".txt"):
-                        self.cookies.append(f"{self.cookie_dir}/{file}")
-            except OSError:
-                pass
-            self.checked = True
-
-        if not self.cookies:
-            if not self.warned:
-                self.warned = True
-                logger.warning(
-                    "Cookies are missing; API playback will be preferred."
-                )
-            return None
-
-        return random.choice(self.cookies)
-
-    async def save_cookies(self, urls: list[str]) -> None:
-        logger.info("Saving cookies from urls...")
-
-        os.makedirs(self.cookie_dir, exist_ok=True)
-
-        async with aiohttp.ClientSession() as session:
-            for url in urls:
-                name = url.split("/")[-1]
-                link = "https://batbin.me/raw/" + name
-
-                async with session.get(link) as resp:
-                    resp.raise_for_status()
-
-                    with open(
-                        f"{self.cookie_dir}/{name}.txt",
-                        "wb",
-                    ) as fw:
-                        fw.write(await resp.read())
-
-        logger.info(f"Cookies saved in {self.cookie_dir}.")
 
     # ------------------------------------------------------------------
     # URL helpers
@@ -869,7 +820,7 @@ class YouTube:
                 logger.info("Recommendations.getRelated unavailable; using search fallback")
 
         except Exception as e:
-            logger.warning(f"Related video lookup failed: {e}; using search fallback")
+            logger.info(f"Related video lookup unavailable; using search fallback: {type(e).__name__}")
 
         # Compatibility fallback for py_yt versions without Recommendations.
         # A title/query is preferred; if unavailable, search the current video
@@ -1023,10 +974,6 @@ class YouTube:
                     opts["format"] = (
                         "bestaudio/best"
                     )
-
-                cookie = self.get_cookies()
-                if cookie:
-                    opts["cookiefile"] = cookie
 
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(

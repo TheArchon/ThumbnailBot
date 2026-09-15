@@ -316,35 +316,48 @@ class TgCall(PyTgCalls):
                         if media:
                             queue.add(chat_id, media)
 
-                    if media:
+                    # Autoplay candidates can fail YouTube extraction (including
+                    # bot-check responses). Never end autoplay on the first bad
+                    # candidate; remove it and try another candidate instead.
+                    attempts = 0
+                    while media and attempts < 5:
                         media = queue.get_current(chat_id)
+                        if not media:
+                            break
+
                         if not media.file_path:
                             media.file_path = await yt.download(
                                 media.id, video=media.video
                             )
-                            if not media.file_path:
-                                await self.stop(chat_id)
-                                try:
-                                    if msg:
-                                        return await msg.edit_text(
-                                            _lang["error_no_file"].format(config.SUPPORT_CHAT)
-                                        )
-                                    return
-                                except Exception:
-                                    return
 
-                        if msg:
-                            media.message_id = msg.id
-                            return await self.play_media(chat_id, msg, media)
-                        return
-                    else:
-                        await self.stop(chat_id)
-                        if msg:
-                            try:
-                                return await msg.edit_text(queue_finished_text)
-                            except Exception:
-                                return
-                        return await app.send_message(chat_id, queue_finished_text)
+                        if media.file_path:
+                            if msg:
+                                media.message_id = msg.id
+                                return await self.play_media(chat_id, msg, media)
+                            return
+
+                        logger.warning(
+                            f"Autoplay candidate failed: {media.id}; trying another candidate"
+                        )
+                        queue.remove_current(chat_id)
+                        attempts += 1
+
+                        media = await yt.get_related(
+                            current.id,
+                            video=current.video,
+                            max_duration=max_duration,
+                            query=getattr(current, "title", None),
+                        )
+                        if media:
+                            queue.add(chat_id, media)
+
+                    await self.stop(chat_id)
+                    if msg:
+                        try:
+                            return await msg.edit_text(queue_finished_text)
+                        except Exception:
+                            return
+                    return await app.send_message(chat_id, queue_finished_text)
                 else:
                     await self.stop(chat_id)
                     if loading_msg:
