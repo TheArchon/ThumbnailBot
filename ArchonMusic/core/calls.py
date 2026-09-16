@@ -1,124 +1,144 @@
-#
-# Copyright (C) 2025-present by TheAloneTeam@Github, < https://github.com/TheAloneTeam >.
-#
-# This file is part of < https://github.com/TheAloneTeam/KartikMusic > project,
-# and is released under the "MIT License".
-# Please see < https://github.com/TheAloneTeam/KartikMusic/blob/master/LICENSE >
-#
-# All rights reserved.
-#
-
 import asyncio
-import time
-from collections import defaultdict
+import re
 
-from ntgcalls import (
-    ConnectionError,
-    ConnectionNotFound,
-    RTMPStreamingUnsupported,
-    TelegramServerError,
-)
+from ntgcalls import (ConnectionNotFound, TelegramServerError,
+                      RTMPStreamingUnsupported, ConnectionError)
+from pyrogram.errors import (ChatSendMediaForbidden, ChatSendPhotosForbidden,
+                             MessageIdInvalid)
 from pyrogram.types import InputMediaPhoto, Message
 from pytgcalls import PyTgCalls, exceptions, types
 from pytgcalls.pytgcalls_session import PyTgCallsSession
 
-from ArchonMusic import app, config, db, lang, logger, queue, thumb, userbot, yt
+from ArchonMusic import (app, config, db, lang, logger,
+                   queue, thumb, userbot, yt)
 from ArchonMusic.helpers import Media, Track, buttons
+
+
+async def _noop():
+    return None
 
 
 class TgCall(PyTgCalls):
     def __init__(self):
         self.clients = []
-        self.restarting = defaultdict(int)
-        self.prefetch_tasks = {}
-        self.transition_tasks = {}
+        self.autoplay_history: dict[int, set] = {}
+        self._bot_avatar_path: str | None = None
+        # Caches each user's downloaded profile-photo file path after the
+        # first lookup. Without this, the SAME user replaying/queuing
+        # multiple tracks in a row re-did a Telegram profile-photo
+        # lookup + download every single time, adding needless delay to
+        # every "now playing" thumbnail after the first.
+        self._user_avatar_cache: dict[int, str | None] = {}
 
     async def pause(self, chat_id: int) -> bool:
         client = await db.get_assistant(chat_id)
         await db.playing(chat_id, paused=True)
-
-        media = queue.get_current(chat_id)
-        if media and media.played_at:
-            media.time += int(time.time() - media.played_at)
-            media.played_at = None
-
         return await client.pause(chat_id)
 
     async def resume(self, chat_id: int) -> bool:
         client = await db.get_assistant(chat_id)
         await db.playing(chat_id, paused=False)
-
-        media = queue.get_current(chat_id)
-        if media:
-            media.played_at = time.time()
-
         return await client.resume(chat_id)
 
-    async def _prepare_next(self, chat_id: int) -> None:
-        try:
-            while await db.get_call(chat_id):
-                if not await db.get_autoplay(chat_id):
-                    await asyncio.sleep(10)
-                    continue
-
-                media = queue.get_current(chat_id)
-                if not media or not media.duration_sec:
-                    break
-
-                played_sec = media.time
-                if media.played_at:
-                    played_sec += int(time.time() - media.played_at)
-
-                remaining = media.duration_sec - played_sec
-
-                if remaining <= 15:
-                    next_media = queue.get_next(chat_id, check=True)
-                    if not next_media and await db.get_autoplay(chat_id):
-                        if isinstance(media, Track):
-                            max_duration = min(int(media.duration_sec * 1.5), 900)
-                            next_media = await yt.get_related(
-                                media.id,
-                                video=media.video,
-                                max_duration=max_duration,
-                                query=getattr(media, "title", None),
-                                language_hint=yt.detect_language(getattr(media, "title", None)),
-                            )
-                            if next_media:
-                                queue.add(chat_id, next_media)
-
-                    if next_media and not next_media.file_path:
-                        next_media.file_path = await yt.download(
-                            next_media.id, video=next_media.video
-                        )
-                    break
-
-                await asyncio.sleep(3)
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.error(f"Error in prefetch for {chat_id}: {e}")
-        finally:
-            self.prefetch_tasks.pop(chat_id, None)
-
     async def stop(self, chat_id: int) -> None:
-        if task := self.prefetch_tasks.pop(chat_id, None):
-            task.cancel()
-
         client = await db.get_assistant(chat_id)
-        media = queue.get_current(chat_id)
-        if media and media.message_id:
-            try:
-                await app.delete_messages(chat_id, media.message_id)
-            except Exception:
-                pass
         queue.clear(chat_id)
         await db.remove_call(chat_id)
         await db.set_loop(chat_id, 0)
+        self.autoplay_history.pop(chat_id, None)
 
         try:
             await client.leave_call(chat_id, close=False)
         except Exception:
             pass
+
+
+    async def _fetch_user_avatar(self, media: Media | Track) -> str | None:
+        """Downloads the Telegram profile photo of whoever requested
+        `media` so the thumbnail's small square slot can show the
+        REQUESTING USER's picture instead of the track's cover art.
+
+        `Track`'s real fields don't include a dedicated `user_id`, but
+        `media.user` is already used elsewhere in this file (see the
+        `text.format(...)` call below), so this resolves an id from
+        whatever `media.user` actually is: a raw int id, a Pyrogram
+        `User`-like object (has `.id`), or a numeric string. A few other
+        common field names are tried first in case they exist. Returns
+        None on any failure so thumbnail generation still falls back
+        gracefully to the cover art — this must never block playback.
+        """
+        candidate = (
+            getattr(media, "user_id", None)
+            or getattr(media, "requested_by", None)
+            or getattr(media, "from_user_id", None)
+            or getattr(media, "uid", None)
+            or getattr(media, "user", None)
+        )
+
+        user_id = None
+        if isinstance(candidate, int):
+            user_id = candidate
+        elif hasattr(candidate, "id"):
+            user_id = candidate.id
+        elif isinstance(candidate, str):
+            # media.user here is an HTML mention link, e.g.:
+            #   '<a href=tg://user?id=7505121412>Some Name</a>'
+            # pull the numeric id straight out of the tg://user?id= part.
+            match = re.search(r"user\?id=(\d+)", candidate)
+            if match:
+                user_id = int(match.group(1))
+            elif candidate.lstrip("-").isdigit():
+                user_id = int(candidate)
+
+        if not user_id:
+            # "Autoplay" is a known placeholder media.user carries for
+            # system-queued tracks nobody explicitly requested — this is
+            # expected, not an error, so don't spam the logs for it.
+            if not (isinstance(candidate, str) and candidate.strip().lower() == "autoplay"):
+                logger.warning(
+                    "[_fetch_user_avatar] could not resolve a usable user id; "
+                    f"media.user was type={type(candidate).__name__!r} value={candidate!r}"
+                )
+            return None
+
+        if user_id in self._user_avatar_cache:
+            return self._user_avatar_cache[user_id]
+
+        result = None
+        try:
+            async for photo in app.get_chat_photos(user_id, limit=1):
+                result = await app.download_media(photo.file_id)
+                break
+            else:
+                logger.warning(
+                    f"[_fetch_user_avatar] user {user_id} has no profile photo"
+                )
+        except Exception as e:
+            logger.warning(f"[_fetch_user_avatar] failed for user {user_id}: {e!r}")
+
+        self._user_avatar_cache[user_id] = result
+        return result
+
+
+    async def _fetch_bot_avatar(self) -> str | None:
+        """Downloads the BOT's own Telegram profile picture, used as the
+        square-slot fallback when there's no requesting user to show
+        (e.g. autoplay-queued tracks, which nobody explicitly requested).
+        Cached after the first successful fetch since the bot's own
+        picture doesn't change mid-run. Returns None on any failure so
+        thumbnail generation still falls back to the cover art."""
+        if self._bot_avatar_path:
+            return self._bot_avatar_path
+        try:
+            me = await app.get_me()
+            if me.photo:
+                self._bot_avatar_path = await app.download_media(me.photo.big_file_id)
+                return self._bot_avatar_path
+            logger.warning("[_fetch_bot_avatar] bot has no profile photo")
+        except Exception as e:
+            logger.warning(f"[_fetch_bot_avatar] failed: {e!r}")
+        return None
+
 
     async def play_media(
         self,
@@ -127,34 +147,32 @@ class TgCall(PyTgCalls):
         media: Media | Track,
         seek_time: int = 0,
     ) -> None:
-        if task := self.prefetch_tasks.pop(chat_id, None):
-            task.cancel()
-
-        self.restarting[chat_id] += 1
-        if await db.get_call(chat_id):
-            await asyncio.sleep(0.5)
-        client = await db.get_assistant(chat_id)
-        _lang = await lang.get_lang(chat_id)
-        _thumb_mode = await db.get_thumb_mode(chat_id)
-        _thumb = (
-            (
-                await thumb.generate(media)
-                if isinstance(media, Track)
-                else config.DEFAULT_THUMB
-            )
-            if config.THUMB_GEN and _thumb_mode
-            else None
+        # NOTE: Thumbnail/avatar fetching was previously done HERE, before
+        # client.play(), which blocked actual playback start behind two
+        # Telegram API round-trips + image generation (often adding
+        # several seconds of delay before any audio was heard). It has
+        # been moved to `_send_now_playing`, which now runs as a
+        # fire-and-forget background task AFTER playback has started.
+        client, _lang = await asyncio.gather(
+            db.get_assistant(chat_id),
+            lang.get_lang(chat_id),
         )
 
         if not media.file_path:
             await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
-            return await self.play_next(chat_id)
+            return await self.stop(chat_id)
 
-        ffmpeg_params = (
-            "-re "
-            + (f"-ss {seek_time} " if seek_time > 1 else "")
-            + ("-vn" if not media.video else "")
-        ).strip()
+        # Auto-reconnect if the download API's connection drops mid-stream
+        # instead of failing outright. (Note: we don't shrink ffmpeg's
+        # probesize/analyzeduration here — doing so previously caused
+        # "Audio source not found" failures on some streams because
+        # ffmpeg didn't get enough data to detect the audio codec before
+        # giving up.)
+        ffmpeg_extra = ""
+        if str(media.file_path).startswith("http"):
+            ffmpeg_extra = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 3"
+        if seek_time > 1:
+            ffmpeg_extra = f"-ss {seek_time} {ffmpeg_extra}".strip()
 
         stream = types.MediaStream(
             media_path=media.file_path,
@@ -166,268 +184,218 @@ class TgCall(PyTgCalls):
                 if media.video
                 else types.MediaStream.Flags.IGNORE
             ),
-            ffmpeg_parameters=ffmpeg_params or None,
+            ffmpeg_parameters=ffmpeg_extra or None,
         )
-
         try:
-            if seek_time or await db.get_call(chat_id):
-                await client.play(chat_id, stream)
-            else:
-                await client.play(chat_id, stream)
-
-            media.played_at = time.time()
-            if seek_time:
-                media.time = seek_time
-            else:
+            await client.play(
+                chat_id=chat_id,
+                stream=stream,
+                config=types.GroupCallConfig(auto_start=False),
+            )
+            if not seek_time:
                 media.time = 1
                 await db.add_call(chat_id)
-                text = _lang["play_media"].format(
-                    media.url,
-                    media.title,
-                    media.duration,
-                    media.user,
+                # Playback has already started at this point. Sending the
+                # "now playing" message/thumbnail is UI-only and must not
+                # delay the next line of audio, so it runs in the
+                # background instead of being awaited here.
+                asyncio.create_task(
+                    self._send_now_playing(chat_id, message, media, _lang)
                 )
-                keyboard = buttons.controls(chat_id, lang=_lang)
-                try:
-                    if _thumb:
-                        await message.edit_media(
-                            media=InputMediaPhoto(
-                                media=_thumb,
-                                caption=text,
-                            ),
-                            reply_markup=keyboard,
-                        )
-                    else:
-                        await message.edit_text(text, reply_markup=keyboard)
-                except Exception:
-                    try:
-                        await message.delete()
-                    except Exception:
-                        pass
-                    if _thumb:
-                        sent = await app.send_photo(
-                            chat_id=chat_id,
-                            photo=_thumb,
-                            caption=text,
-                            reply_markup=keyboard,
-                        )
-                    else:
-                        sent = await app.send_message(
-                            chat_id=chat_id,
-                            text=text,
-                            reply_markup=keyboard,
-                        )
-                    media.message_id = sent.id
-
-            self.prefetch_tasks[chat_id] = asyncio.create_task(
-                self._prepare_next(chat_id)
-            )
         except FileNotFoundError:
             await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
-            await self.play_next(chat_id)
+            await self.stop(chat_id)
         except exceptions.NoActiveGroupCall:
             await self.stop(chat_id)
             await message.edit_text(_lang["error_no_call"])
         except exceptions.NoAudioSourceFound:
             await message.edit_text(_lang["error_no_audio"])
-            await self.play_next(chat_id)
-        except (asyncio.TimeoutError, TimeoutError):
-            await message.edit_text(_lang["error_tg_server"])
-            await self.play_next(chat_id)
+            await self.stop(chat_id)
         except (ConnectionError, ConnectionNotFound, TelegramServerError):
             await self.stop(chat_id)
             await message.edit_text(_lang["error_tg_server"])
         except RTMPStreamingUnsupported:
             await self.stop(chat_id)
             await message.edit_text(_lang["error_rtmp"])
-        finally:
-            await asyncio.sleep(5)
-            self.restarting[chat_id] -= 1
+
+
+    async def _resolve_now_playing_avatar(self, media: Media | Track) -> str | None:
+        """Requesting user's avatar, falling back to the bot's own —
+        wrapped as one coroutine so calls.py can fire it off as a single
+        background task that overlaps with the cover-art download."""
+        avatar = await self._fetch_user_avatar(media)
+        if not avatar:
+            avatar = await self._fetch_bot_avatar()
+        return avatar
+
+    async def _send_now_playing(
+        self,
+        chat_id: int,
+        message: Message,
+        media: Media | Track,
+        _lang: dict,
+    ) -> None:
+        """Builds and sends/edits the 'now playing' message with its
+        thumbnail. Runs as a background task (fire-and-forget) so that
+        avatar downloads + image generation never delay audio playback,
+        which has already started by the time this runs. Any failure
+        here is logged and swallowed — it must never crash or block
+        anything else, since playback is already underway."""
+        try:
+            _thumb_mode = await db.get_thumb_mode(chat_id)
+            _thumb = None
+            if config.THUMB_GEN and _thumb_mode:
+                if isinstance(media, Track):
+                    _thumb = await thumb.generate(media, user_avatar=None)
+                else:
+                    _thumb = config.DEFAULT_THUMB
+
+            title = media.title or ""
+            title = title.split("#")[0].strip()
+            if len(title) > 25:
+                title = title[:25].rstrip() + "..."
+
+            text = _lang["play_media"].format(
+                media.url,
+                title,
+                media.duration,
+                media.user,
+            )
+            keyboard = buttons.controls(chat_id)
+            try:
+                if _thumb:
+                    await message.edit_media(
+                        media=InputMediaPhoto(
+                            media=_thumb,
+                            caption=text,
+                        ),
+                        reply_markup=keyboard,
+                    )
+                else:
+                    await message.edit_text(text, reply_markup=keyboard)
+            except (ChatSendMediaForbidden, ChatSendPhotosForbidden, MessageIdInvalid):
+                if _thumb:
+                    sent = await app.send_photo(
+                        chat_id=chat_id,
+                        photo=_thumb,
+                        caption=text,
+                        reply_markup=keyboard,
+                    )
+                else:
+                    sent = await app.send_message(
+                        chat_id=chat_id,
+                        text=text,
+                        reply_markup=keyboard,
+                    )
+                media.message_id = sent.id
+        except Exception as e:
+            logger.warning(f"[_send_now_playing] failed for chat {chat_id}: {e!r}")
+
 
     async def replay(self, chat_id: int) -> None:
         if not await db.get_call(chat_id):
             return
 
         media = queue.get_current(chat_id)
-        if media and media.message_id:
-            try:
-                await app.delete_messages(chat_id, media.message_id)
-            except Exception:
-                pass
         _lang = await lang.get_lang(chat_id)
         msg = await app.send_message(chat_id=chat_id, text=_lang["play_again"])
         media.message_id = msg.id
         await self.play_media(chat_id, msg, media)
 
-    async def play_next(self, chat_id: int, skip_user: str | None = None) -> None:
+
+    async def _autoplay_next(self, chat_id: int, finished) -> "Track | None":
+        video_id = getattr(finished, "id", None)
+        if not video_id:
+            return None
+
+        history = self.autoplay_history.setdefault(chat_id, set())
+        history.add(video_id)
+
+        track = await yt.autoplay_track(
+            video_id,
+            video=getattr(finished, "video", False),
+            exclude=history,
+        )
+        if not track:
+            return None
+
+        history.add(track.id)
+        queue.add(chat_id, track)
+        return queue.get_current(chat_id)
+
+
+    async def play_next(self, chat_id: int) -> None:
         if loop := await db.get_loop(chat_id):
             await db.set_loop(chat_id, loop - 1)
             return await self.replay(chat_id)
 
-        _lang = await lang.get_lang(chat_id)
-        current = queue.get_current(chat_id)
-        if current and current.message_id:
-            try:
-                await app.delete_messages(chat_id, current.message_id)
-            except Exception:
-                pass
-
-        # When the user skips, show a loading message immediately.
-        # Use a fallback so missing translation keys never crash playback.
-        loading_text = _lang.get("loading", "⏳ Loading...")
-        queue_finished_text = _lang.get("queue_finished", "Queue finished.")
-        autoplay_skip_text = _lang.get(
-            "autoplay_skip", "⏭️ Skipped by {}"
-        ).format(skip_user)
-        autoplay_next_text = _lang.get("autoplay_next", "▶️ Playing next song...")
-        play_next_text = _lang.get("play_next", "▶️ Playing next...")
-        play_skipped_text = _lang.get("play_skipped", "⏭️ Skipped by {}")
-
-        loading_msg = None
-        if skip_user:
-            try:
-                loading_msg = await app.send_message(chat_id=chat_id, text=loading_text)
-            except Exception:
-                loading_msg = None
-
+        finished = queue.get_current(chat_id)
         media = queue.get_next(chat_id)
+        try:
+            if media.message_id:
+                await app.delete_messages(
+                    chat_id=chat_id,
+                    message_ids=media.message_id,
+                    revoke=True,
+                )
+                media.message_id = 0
+        except Exception:
+            pass
+
         if not media:
-            # The 3-second prefetch worker may still be downloading the next
-            # track. Give it a short head-start and re-check the queue before
-            # starting a second related-search. This prevents an end-of-track
-            # race where StreamEnded fires at the same time as prefetch.
-            prefetch = self.prefetch_tasks.get(chat_id)
-            if prefetch and not prefetch.done():
-                try:
-                    await asyncio.wait_for(asyncio.shield(prefetch), timeout=10.0)
-                except (asyncio.TimeoutError, asyncio.CancelledError):
-                    pass
-                except Exception as e:
-                    logger.debug(f"Prefetch wait failed for {chat_id}: {e}")
-                media = queue.get_next(chat_id)
+            if finished and await db.get_autoplay(chat_id):
+                media = await self._autoplay_next(chat_id, finished)
+            if not media:
+                return await self.stop(chat_id)
 
-            if media:
-                pass
-            elif not await db.get_autoplay(chat_id):
-                await self.stop(chat_id)
-                if loading_msg:
-                    try:
-                        await loading_msg.edit_text(
-                            play_skipped_text.format(skip_user) + "\n\n" + queue_finished_text
-                        )
-                        return
-                    except Exception:
-                        pass
-                if skip_user:
-                    await app.send_message(chat_id, play_skipped_text.format(skip_user))
-                return await app.send_message(chat_id, queue_finished_text)
-
-            # Autoplay is intentionally continuous: when the queue is empty,
-            # keep searching for another track instead of ending the call.
-            # Prefer the language of the track that just finished.
-            if current and isinstance(current, Track):
-                msg = loading_msg
-                if not msg:
-                    try:
-                        msg = await app.send_message(
-                            chat_id,
-                            autoplay_skip_text if skip_user else autoplay_next_text,
-                        )
-                    except Exception:
-                        msg = None
-
-                max_duration = min(int(current.duration_sec * 1.5), 900)
-                language_hint = yt.detect_language(getattr(current, "title", None))
-
-                while await db.get_autoplay(chat_id) and await db.get_call(chat_id):
-                    candidate = None
-                    # Try several candidates before waiting briefly and trying
-                    # again. A failed YouTube extraction must not end autoplay.
-                    for _ in range(8):
-                        try:
-                            candidate = await yt.get_related(
-                                current.id,
-                                video=current.video,
-                                max_duration=max_duration,
-                                query=getattr(current, "title", None),
-                                language_hint=language_hint,
-                            )
-                        except TypeError:
-                            # Compatibility with older YouTube helpers that do
-                            # not accept language_hint.
-                            candidate = await yt.get_related(
-                                current.id,
-                                video=current.video,
-                                max_duration=max_duration,
-                                query=getattr(current, "title", None),
-                            )
-                        if not candidate:
-                            continue
-                        if not candidate.file_path:
-                            candidate.file_path = await yt.download(
-                                candidate.id, video=candidate.video
-                            )
-                        if candidate.file_path:
-                            queue.add(chat_id, candidate)
-                            media = queue.get_next(chat_id)
-                            if media:
-                                media.message_id = msg.id if msg else None
-                                if msg:
-                                    return await self.play_media(chat_id, msg, media)
-                                return await self.play_media(
-                                    chat_id,
-                                    await app.send_message(chat_id, text=play_next_text),
-                                    media,
-                                )
-                        candidate = None
-
-                    # Do not stop the voice chat just because YouTube temporarily
-                    # failed. Keep autoplay alive and retry after a short pause.
-                    await asyncio.sleep(2)
-
-                return
-            else:
-                await self.stop(chat_id)
-                if loading_msg:
-                    try:
-                        return await loading_msg.edit_text(queue_finished_text)
-                    except Exception:
-                        return
-                return await app.send_message(chat_id, queue_finished_text)
-
-        # A queued track is available. Reuse the loading message created by /skip.
-        msg = loading_msg
-        if not msg and media.message_id:
-            try:
-                msg = await app.get_messages(chat_id, media.message_id)
-                if not msg or not msg.id or msg.empty:
-                    msg = None
-            except Exception:
-                msg = None
-
-        if not msg:
-            msg = await app.send_message(chat_id=chat_id, text=play_next_text)
-        else:
-            try:
-                await msg.edit_text(loading_text)
-            except Exception:
-                pass
+        _lang, msg = await asyncio.gather(
+            lang.get_lang(chat_id),
+            app.send_message(chat_id=chat_id, text="Loading..."),
+        )
 
         if not media.file_path:
-            media.file_path = await yt.download(media.id, video=media.video)
+            # Stream directly from the download API's URL — ffmpeg plays
+            # off it directly, so this is near-instant vs. waiting for a
+            # full download to disk. Falls back to a full download() only
+            # if the API didn't return valid media for this video (rare).
+            media.file_path = await yt.stream_url(media.id, video=media.video)
             if not media.file_path:
-                try:
-                    await msg.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
-                except Exception:
-                    pass
-                return await self.play_next(chat_id)
+                media.file_path, _ = await yt.download(media.id, video=media.video)
+            if not media.file_path:
+                # No retry, no next-track chain — just report the
+                # failure once and stop, exactly one message.
+                await msg.edit_text(
+                    _lang["error_no_file"].format(config.SUPPORT_CHAT)
+                )
+                return await self.stop(chat_id)
+
+        await msg.edit_text(_lang["play_next"])
 
         media.message_id = msg.id
         await self.play_media(chat_id, msg, media)
+        asyncio.create_task(self._prefetch_next(chat_id))
+
+    async def _prefetch_next(self, chat_id: int) -> None:
+        """While the current track plays, pre-resolve the streamable URL
+        for whatever's next in queue so play_next() doesn't have to wait
+        on it later. Best-effort only — any failure here is silent since
+        play_next() will just resolve it fresh if this didn't help."""
+        try:
+            upcoming = queue.get_next(chat_id, check=True)
+        except Exception:
+            return
+        if not upcoming or upcoming.file_path:
+            return
+        try:
+            upcoming.file_path = await yt.stream_url(upcoming.id, video=upcoming.video)
+        except Exception as e:
+            logger.warning(f"[_prefetch_next] failed for chat {chat_id}: {e!r}")
+
 
     async def ping(self) -> float:
         pings = [client.ping for client in self.clients]
         return round(sum(pings) / len(pings), 2)
+
 
     async def _delete_msg(self, message: Message, delay: int = 2):
         await asyncio.sleep(delay)
@@ -460,40 +428,9 @@ class TgCall(PyTgCalls):
                     asyncio.create_task(self._delete_msg(sent))
                 except Exception:
                     pass
-
             elif isinstance(update, types.StreamEnded):
                 if update.stream_type == types.StreamEnded.Type.AUDIO:
-                    chat_id = update.chat_id
-                    existing = self.transition_tasks.get(chat_id)
-                    if existing and not existing.done():
-                        return
-
-                    async def advance():
-                        try:
-                            # Do not discard the end event while play_media()
-                            # is still completing its restart section.
-                            for _ in range(24):
-                                if not self.restarting.get(chat_id):
-                                    break
-                                await asyncio.sleep(0.25)
-
-                            # If another transition already started a fresh
-                            # stream, don't advance it a second time.
-                            media = queue.get_current(chat_id)
-                            if media and media.played_at:
-                                if time.time() - media.played_at < 3:
-                                    return
-                            await self.play_next(chat_id)
-                        except asyncio.CancelledError:
-                            pass
-                        except Exception as e:
-                            logger.error(
-                                f"End-of-stream transition failed for {chat_id}: {e}"
-                            )
-                        finally:
-                            self.transition_tasks.pop(chat_id, None)
-
-                    self.transition_tasks[chat_id] = asyncio.create_task(advance())
+                    await self.play_next(update.chat_id)
             elif isinstance(update, types.ChatUpdate):
                 if update.status in [
                     types.ChatUpdate.Status.KICKED,
@@ -501,6 +438,7 @@ class TgCall(PyTgCalls):
                     types.ChatUpdate.Status.CLOSED_VOICE_CHAT,
                 ]:
                     await self.stop(update.chat_id)
+
 
     async def boot(self) -> None:
         PyTgCallsSession.notice_displayed = True
