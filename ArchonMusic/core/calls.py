@@ -318,11 +318,9 @@ class TgCall(PyTgCalls):
         history = self.autoplay_history.setdefault(chat_id, set())
         history.add(video_id)
 
-        track = await yt.autoplay_track(
-            video_id,
-            video=getattr(finished, "video", False),
-            exclude=history,
-        )
+        # YouTube exposes get_related() in this repo; autoplay_track() does not exist.
+        # Use the existing related/mix + search fallback and keep the played-history.
+        track = await yt.get_related(finished, played=list(history))
         if not track:
             return None
 
