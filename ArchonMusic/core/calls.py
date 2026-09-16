@@ -31,6 +31,7 @@ class TgCall(PyTgCalls):
         self.clients = []
         self.restarting = defaultdict(int)
         self.prefetch_tasks = {}
+        self.transition_tasks = {}
 
     async def pause(self, chat_id: int) -> bool:
         client = await db.get_assistant(chat_id)
@@ -462,9 +463,37 @@ class TgCall(PyTgCalls):
 
             elif isinstance(update, types.StreamEnded):
                 if update.stream_type == types.StreamEnded.Type.AUDIO:
-                    if self.restarting.get(update.chat_id):
+                    chat_id = update.chat_id
+                    existing = self.transition_tasks.get(chat_id)
+                    if existing and not existing.done():
                         return
-                    await self.play_next(update.chat_id)
+
+                    async def advance():
+                        try:
+                            # Do not discard the end event while play_media()
+                            # is still completing its restart section.
+                            for _ in range(24):
+                                if not self.restarting.get(chat_id):
+                                    break
+                                await asyncio.sleep(0.25)
+
+                            # If another transition already started a fresh
+                            # stream, don't advance it a second time.
+                            media = queue.get_current(chat_id)
+                            if media and media.played_at:
+                                if time.time() - media.played_at < 3:
+                                    return
+                            await self.play_next(chat_id)
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception as e:
+                            logger.error(
+                                f"End-of-stream transition failed for {chat_id}: {e}"
+                            )
+                        finally:
+                            self.transition_tasks.pop(chat_id, None)
+
+                    self.transition_tasks[chat_id] = asyncio.create_task(advance())
             elif isinstance(update, types.ChatUpdate):
                 if update.status in [
                     types.ChatUpdate.Status.KICKED,
