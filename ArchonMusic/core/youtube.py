@@ -228,10 +228,24 @@ class YouTube:
         )):
             return "punjabi"
         if any(k in t for k in (
-            "bhojpuri", "bhojpuriya", "purvanchal", "nirahua", "khesari",
-            "pawan singh", "rakesh mishra", "pramod premi", "shilpi raj",
-            "ritesh pandey", "ankush raja", "samar singh", "neelkamal",
+            "bhojpuri", "bhojpuriya", "bhojpuri song", "bhojpuri songs",
+            "purvanchal", "nirahua", "dinesh lal yadav", "khesari",
+            "khesari lal", "pawan singh", "rakesh mishra", "pramod premi",
+            "shilpi raj", "ritesh pandey", "ankush raja", "samar singh",
+            "neelkamal singh", "arvind akela kallu", "gunjan singh",
+            "priyanka singh", "kalpana", "chhotu chhaliya", "vikas jha",
         )):
+            return "bhojpuri"
+        # Common Bhojpuri vocabulary is often present even when YouTube
+        # omits the word "Bhojpuri" from the title. Keep it out of Hindi.
+        bhojpuri_words = (
+            "गवनवा", "सईयां", "सईयाँ", "सइयां", "सइयाँ", "बलमुआ",
+            "बलमा", "पिया जी", "पियवा", "भतार", "लईका", "लइका",
+            "करेजा", "रउआ", "तोहरा", "हमरा", "हमार", "तोहार",
+            "बाड़े", "बानी", "बाड़ू", "बाड़ू", "निरहुआ", "खेसारी",
+            "पवन सिंह", "शिल्पी राज",
+        )
+        if any(k in t for k in bhojpuri_words):
             return "bhojpuri"
         # Devanagari without Bhojpuri markers is treated as Hindi.
         if re.search(r"[\u0900-\u097f]", t) or any(k in t for k in (
