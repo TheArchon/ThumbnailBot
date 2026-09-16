@@ -3,6 +3,7 @@ import re
 import asyncio
 import aiohttp
 import random
+from pathlib import Path
 import yt_dlp
 from py_yt import VideosSearch, Playlist
 from ArchonMusic import logger, config
@@ -198,14 +199,69 @@ class YouTube:
         if path and os.path.exists(path) and os.path.getsize(path) > 0:
             return path
 
-        # Fallback downloader for API responses that don't contain a file.
+        # Secondary API fallback. Some hosted API endpoints return 404;
+        # keep trying but never let that prevent the local extractor fallback.
         try:
             path = await self.fallen_api.download_track(video_id, video=video)
             if path and os.path.exists(path) and os.path.getsize(path) > 0:
                 return path
         except Exception as e:
-            logger.warning(f"[YouTube.download] fallback failed for {video_id}: {e!r}")
+            logger.warning(f"[YouTube.download] API fallback failed for {video_id}: {e!r}")
 
+        # Final fallback: yt-dlp directly, WITHOUT cookies. Use a small set of
+        # public YouTube clients because cloud IPs can fail on one client while
+        # another still exposes the media formats.
+        path = await self._direct_ytdlp_download(video_id, video=video)
+        if path and os.path.exists(path) and os.path.getsize(path) > 0:
+            return path
+
+        return None
+
+    async def _direct_ytdlp_download(self, video_id: str, video: bool = False) -> str | None:
+        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+        ext = "mp4" if video else "m4a"
+        output = os.path.join(DOWNLOAD_DIR, f"{video_id}.%(ext)s")
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        clients = [
+            ["android"],
+            ["android_vr"],
+            ["tv_embedded"],
+            ["web_safari"],
+        ]
+
+        def run(client):
+            opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "noplaylist": True,
+                "ignoreerrors": False,
+                "retries": 1,
+                "fragment_retries": 1,
+                "socket_timeout": 20,
+                "geo_bypass": True,
+                "outtmpl": output,
+                "extractor_args": {"youtube": {"player_client": client}},
+            }
+            if video:
+                opts["format"] = "best[ext=mp4]/best"
+            else:
+                opts["format"] = "bestaudio/best"
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url])
+
+        for client in clients:
+            try:
+                await asyncio.get_event_loop().run_in_executor(None, run, client)
+                candidates = [
+                    os.path.join(DOWNLOAD_DIR, f"{video_id}.{e}")
+                    for e in ("m4a", "webm", "mp4", "opus", "aac")
+                ]
+                candidates += [str(x) for x in Path(DOWNLOAD_DIR).glob(f"{video_id}.*")]
+                for candidate in candidates:
+                    if os.path.isfile(candidate) and os.path.getsize(candidate) > 0:
+                        return candidate
+            except Exception as e:
+                logger.warning(f"[YouTube.direct] client={client[0]} failed for {video_id}: {e!r}")
         return None
 
     def _format_duration(self, seconds: int) -> str:
