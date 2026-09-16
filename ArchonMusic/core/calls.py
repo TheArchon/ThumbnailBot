@@ -26,6 +26,27 @@ from ArchonMusic import app, config, db, lang, logger, queue, thumb, userbot, yt
 from ArchonMusic.helpers import Media, Track, buttons
 
 
+def _autoplay_language_hint(title: str | None) -> str:
+    """Best-effort language hint from the current track title.
+
+    Autoplay is intentionally conservative: Hindi Devanagari stays Hindi,
+    obvious Bhojpuri titles stay Bhojpuri, and Latin-script titles default to
+    English. This is only a search hint; it never blocks playback.
+    """
+    text = (title or "").lower()
+    bhojpuri_words = (
+        "bhojpuri", "भोजपुरी", "भोजपुरिया", "का हो", "कइसे", "कइला",
+        "रउआ", "रउरा", "हमार", "तोहार", "बाड़े", "बानी", "बाड़ू",
+        "छठ", "लइकी", "लइका", "सइयाँ", "सईयाँ", "बलम", "गवनवा",
+    )
+    if any(word in text for word in bhojpuri_words):
+        return "bhojpuri"
+    # Devanagari strongly indicates Hindi/Hindi-language music in this bot.
+    if any("\u0900" <= ch <= "\u097f" for ch in text):
+        return "hindi"
+    return "english"
+
+
 class TgCall(PyTgCalls):
     def __init__(self):
         self.clients = []
@@ -70,7 +91,7 @@ class TgCall(PyTgCalls):
 
                 remaining = media.duration_sec - played_sec
 
-                if remaining <= 30:
+                if remaining <= 3:
                     next_media = queue.get_next(chat_id, check=True)
                     if not next_media and await db.get_autoplay(chat_id):
                         if isinstance(media, Track):
@@ -80,6 +101,7 @@ class TgCall(PyTgCalls):
                                 video=media.video,
                                 max_duration=max_duration,
                                 query=getattr(media, "title", None),
+                                language_hint=_autoplay_language_hint(getattr(media, "title", None)),
                             )
                             if next_media:
                                 queue.add(chat_id, next_media)
@@ -149,8 +171,7 @@ class TgCall(PyTgCalls):
             return await self.play_next(chat_id)
 
         ffmpeg_params = (
-            "-re "
-            + (f"-ss {seek_time} " if seek_time > 1 else "")
+            (f"-ss {seek_time} " if seek_time > 1 else "")
             + ("-vn" if not media.video else "")
         ).strip()
 
@@ -312,6 +333,7 @@ class TgCall(PyTgCalls):
                             video=current.video,
                             max_duration=max_duration,
                             query=getattr(current, "title", None),
+                            language_hint=_autoplay_language_hint(getattr(current, "title", None)),
                         )
                         if media:
                             queue.add(chat_id, media)
@@ -347,6 +369,7 @@ class TgCall(PyTgCalls):
                             video=current.video,
                             max_duration=max_duration,
                             query=getattr(current, "title", None),
+                            language_hint=_autoplay_language_hint(getattr(current, "title", None)),
                         )
                         if media:
                             queue.add(chat_id, media)
