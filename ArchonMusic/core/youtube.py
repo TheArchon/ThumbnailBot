@@ -123,28 +123,39 @@ class YouTube:
             _search = VideosSearch(query, limit=1)
             results = await _search.next()
             if results and results["result"]:
-                data = results["result"][0]
+                data = results["result"][0] or {}
+                channel = data.get("channel") or {}
+                thumbnails = data.get("thumbnails") or []
+                thumb_url = ""
+                if thumbnails:
+                    last_thumb = thumbnails[-1] or {}
+                    thumb_url = last_thumb.get("url") or ""
+                    if thumb_url:
+                        thumb_url = thumb_url.split("?", 1)[0]
                 detected_language = self._language_key(
-                    data.get("title", ""), data.get("channel", {}).get("name", "")
+                    data.get("title", ""), channel.get("name", "")
                 )
                 # If YouTube omits the language from title/channel, use the
                 # original user query as a second signal. This is important
                 # for autoplay after a direct /play search.
                 if detected_language == "unknown":
                     detected_language = self._language_key(query, "")
-                return Track(
+                track = Track(
                     id=data.get("id"),
-                    channel_name=data.get("channel", {}).get("name"),
+                    channel_name=channel.get("name") or "YouTube",
                     duration=data.get("duration"),
                     duration_sec=utils.to_seconds(data.get("duration")) if data.get("duration") else 0,
                     message_id=m_id,
                     title=data.get("title"),
-                    thumbnail=data.get("thumbnails", [{}])[-1].get("url").split("?")[0],
+                    thumbnail=thumb_url or None,
                     url=data.get("link"),
-                    view_count=data.get("viewCount", {}).get("short"),
-                    language=detected_language,
+                    view_count=(data.get("viewCount") or {}).get("short") if isinstance(data.get("viewCount"), dict) else str(data.get("viewCount") or ""),
                     video=video,
                 )
+                # Keep compatibility with older Track dataclasses that do not
+                # declare a language field.
+                track.language = detected_language
+                return track
         except Exception as e:
             logger.error(f"Search error: {e}")
         return None
@@ -160,13 +171,13 @@ class YouTube:
                     duration=data.get("duration"),
                     duration_sec=utils.to_seconds(data.get("duration")) if data.get("duration") else 0,
                     title=data.get("title"),
-                    thumbnail=data.get("thumbnails", [{}])[-1].get("url").split("?")[0],
+                    thumbnail=thumb_url or None,
                     url=data.get("link").split("&list=")[0],
                     user=user,
                     view_count="",
-                    language=self._language_key(data.get("title", ""), data.get("channel", {}).get("name", "")),
                     video=video,
                 )
+                track.language = self._language_key(data.get("title", ""), data.get("channel", {}).get("name", ""))
                 tracks.append(track)
         except Exception as e:
             logger.error(f"Playlist error: {e}")
@@ -337,7 +348,7 @@ class YouTube:
             thumbs = entry.get("thumbnails") or []
             thumbnail = thumbs[-1]["url"].split("?")[0] if thumbs else None
 
-            return Track(
+            track = Track(
                 id=eid,
                 channel_name=entry.get("channel") or entry.get("uploader") or "YouTube",
                 duration=self._format_duration(duration),
@@ -346,9 +357,10 @@ class YouTube:
                 thumbnail=thumbnail,
                 url=f"https://www.youtube.com/watch?v={eid}",
                 view_count=self._format_views(entry.get("view_count")),
-                language=candidate_language,
                 video=False,
             )
+            track.language = candidate_language
+            return track
 
         return None
 
@@ -416,7 +428,7 @@ class YouTube:
                 if not duration_sec or duration_sec > config.DURATION_LIMIT:
                     continue
 
-                return Track(
+                track = Track(
                     id=eid,
                     channel_name=data.get("channel", {}).get("name") or "YouTube",
                     duration=duration_str,
@@ -424,10 +436,11 @@ class YouTube:
                     title=title,
                     thumbnail=(data.get("thumbnails", [{}])[-1].get("url") or "").split("?")[0] or None,
                     url=data.get("link"),
-                    view_count=data.get("viewCount", {}).get("short"),
-                    language=candidate_language,
+                    view_count=(data.get("viewCount") or {}).get("short") if isinstance(data.get("viewCount"), dict) else str(data.get("viewCount") or ""),
                     video=False,
                 )
+                track.language = candidate_language
+                return track
 
         return None
 
