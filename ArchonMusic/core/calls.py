@@ -70,7 +70,7 @@ class TgCall(PyTgCalls):
 
                 remaining = media.duration_sec - played_sec
 
-                if remaining <= 3:
+                if remaining <= 15:
                     next_media = queue.get_next(chat_id, check=True)
                     if not next_media and await db.get_autoplay(chat_id):
                         if isinstance(media, Track):
@@ -298,7 +298,7 @@ class TgCall(PyTgCalls):
             prefetch = self.prefetch_tasks.get(chat_id)
             if prefetch and not prefetch.done():
                 try:
-                    await asyncio.wait_for(asyncio.shield(prefetch), timeout=2.0)
+                    await asyncio.wait_for(asyncio.shield(prefetch), timeout=10.0)
                 except (asyncio.TimeoutError, asyncio.CancelledError):
                     pass
                 except Exception as e:
