@@ -202,32 +202,41 @@ class YouTube:
             "extractor_retries": 1,
             "extractor_args": {"youtube": {"player_client": ["android"]}},
         }
-        cookie = self.get_cookies()
-        if cookie:
-            opts["cookiefile"] = cookie
-
         url = f"https://www.youtube.com/watch?v={video_id}&list=RD{video_id}"
         with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(url, download=False)
 
     @staticmethod
-    def _is_music_result(title: str, duration_sec: int) -> bool:
-        """Reject podcasts/episodes and other non-song results from autoplay."""
+    def _is_non_music_title(title: str) -> bool:
+        """Reject podcast/episode/talk content from autoplay."""
         t = (title or "").lower()
         blocked = (
-            "episode", "ep.", "ep ", "podcast", "pod cast",
-            "full episode", "interview", "news", "live stream",
-            "livestream", "webinar", "documentary", "movie", "film",
+            "episode", "podcast", "interview", "news", "talk show",
+            "full show", "full episode", "web series", "webseries",
+            "documentary", "trailer", "teaser", "reaction",
         )
-        if any(word in t for word in blocked):
-            return False
-        # Very long autoplay results are usually shows/podcasts rather than songs.
-        if duration_sec > 15 * 60:
-            return False
-        return True
+        return any(word in t for word in blocked)
+
+    @staticmethod
+    def _movie_key(title: str) -> str:
+        """Get a lightweight movie/source key from common YouTube song titles."""
+        t = re.sub(r"\s+", " ", (title or "").lower()).strip()
+        # Common formats: Song - Movie, Song | Movie, Song (Movie).
+        parts = re.split(r"\s+[|–—-]\s+|\s*\|\s*", t)
+        if len(parts) > 1:
+            candidate = parts[-1].strip()
+        else:
+            m = re.search(r"\bfrom\s+(.+)$", t)
+            candidate = m.group(1).strip() if m else ""
+            if not candidate:
+                m = re.search(r"\(([^()]*)\)\s*$", t)
+                candidate = m.group(1).strip() if m else ""
+        candidate = re.sub(r"[^a-z0-9 ]+", " ", candidate)
+        candidate = re.sub(r"\b(official|video|audio|song|lyrics|lyric|hd|4k)\b", " ", candidate)
+        return re.sub(r"\s+", " ", candidate).strip()
 
     async def _related_from_mix(
-        self, video_id: str, played: set[str]
+        self, video_id: str, played: set[str], movie_history: set[str] | None = None
     ) -> Track | None:
         loop = asyncio.get_event_loop()
         try:
@@ -254,11 +263,14 @@ class YouTube:
             title = entry.get("title") or "Unknown"
             if title.lower() in ("[deleted video]", "[private video]"):
                 continue
+            if self._is_non_music_title(title):
+                continue
+            movie_key = self._movie_key(title)
+            if movie_key and movie_history and movie_key in movie_history:
+                continue
 
             duration = int(entry.get("duration") or 0)
             if duration <= 0 or duration > config.DURATION_LIMIT:
-                continue
-            if not self._is_music_result(title, duration):
                 continue
 
             thumbs = entry.get("thumbnails") or []
@@ -279,19 +291,16 @@ class YouTube:
         return None
 
     async def _related_from_search(
-        self, current: Track, played: set[str]
+        self, current: Track, played: set[str], movie_history: set[str] | None = None
     ) -> Track | None:
         """Fallback used when YouTube blocks the mix-playlist scrape (common on
         server/cloud IPs without cookies). Reuses the same search backend that
         already powers /play, so it works wherever normal search works."""
         queries = []
-        # Search by the current song title first. Searching only the channel
-        # often returns podcasts/episodes from the same creator.
+        if current.channel_name:
+            queries.append(f"{current.channel_name}")
         if current.title:
-            q = current.title
-            if current.channel_name:
-                q = f"{current.title} {current.channel_name}"
-            queries.append(q)
+            queries.append(f"{current.title}")
 
         for query in queries:
             try:
@@ -306,11 +315,16 @@ class YouTube:
                 if not eid or eid in played:
                     continue
 
+                title = data.get("title") or "Unknown"
+                if self._is_non_music_title(title):
+                    continue
+                movie_key = self._movie_key(title)
+                if movie_key and movie_history and movie_key in movie_history:
+                    continue
+
                 duration_str = data.get("duration")
                 duration_sec = utils.to_seconds(duration_str) if duration_str else 0
                 if not duration_sec or duration_sec > config.DURATION_LIMIT:
-                    continue
-                if not self._is_music_result(data.get("title") or "", duration_sec):
                     continue
 
                 return Track(
@@ -318,7 +332,7 @@ class YouTube:
                     channel_name=data.get("channel", {}).get("name") or "YouTube",
                     duration=duration_str,
                     duration_sec=duration_sec,
-                    title=(data.get("title") or "Unknown")[:25],
+                    title=title[:25],
                     thumbnail=(data.get("thumbnails", [{}])[-1].get("url") or "").split("?")[0] or None,
                     url=data.get("link"),
                     view_count=data.get("viewCount", {}).get("short"),
@@ -328,7 +342,8 @@ class YouTube:
         return None
 
     async def get_related(
-        self, current: Track, played: list[str] | None = None
+        self, current: Track, played: list[str] | None = None,
+        movie_history: list[str] | None = None
     ) -> Track | None:
         """Fetch the next autoplay track, skipping anything already played in
         this session. Tries YouTube's related mix first, falling back to a
@@ -339,13 +354,21 @@ class YouTube:
 
         played = set(played or [])
         played.add(current.id)
+        movie_history = set(movie_history or [])
+        current_movie = self._movie_key(getattr(current, "title", ""))
+        if current_movie:
+            movie_history.add(current_movie)
 
         # Run the two lightweight discovery paths in parallel. On cloud IPs,
         # YouTube's RD mix can be slow/blocked while VideosSearch is often
         # available immediately. Whichever produces a valid unused track first
         # wins, reducing the pause between songs.
-        mix_task = asyncio.create_task(self._related_from_mix(current.id, played))
-        search_task = asyncio.create_task(self._related_from_search(current, played))
+        mix_task = asyncio.create_task(
+            self._related_from_mix(current.id, played, movie_history)
+        )
+        search_task = asyncio.create_task(
+            self._related_from_search(current, played, movie_history)
+        )
         try:
             pending = {mix_task, search_task}
             while pending:
