@@ -88,7 +88,7 @@ async def _controls(_, query: types.CallbackQuery):
 
         msg = await app.send_message(chat_id=chat_id, text="Loading...")
         if not media.file_path:
-            media.file_path = await yt.stream_url(media.id, video=media.video)
+            media.file_path = await yt.download(media.id, video=media.video)
             if not media.file_path:
                 result = await yt.download(media.id, video=media.video)
                 media.file_path = result[0] if isinstance(result, tuple) else result

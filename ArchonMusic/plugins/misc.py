@@ -72,7 +72,7 @@ async def update_timer(length=10):
                         # matches the fast path used everywhere else
                         # (play.py / calls.py), so a song added mid-
                         # playback doesn't stall on a slow download here.
-                        next.file_path = await yt.stream_url(next.id, video=next.video)
+                        next.file_path = await yt.download(next.id, video=next.video)
                         if not next.file_path:
                             next.file_path, _ = await yt.download(next.id, video=next.video)
 
