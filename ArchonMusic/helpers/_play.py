@@ -29,7 +29,7 @@ def checkUB(play):
         )
         video = m.command[0][0] == "v" and config.VIDEO_PLAY
         url = utils.get_url(m)
-        if url and yt.invalid(url):
+        if url and not yt.valid(url):
             return await m.reply_text(m.lang["play_not_found"].format(config.SUPPORT_CHAT))
         m3u8 = url and not yt.valid(url)
 
