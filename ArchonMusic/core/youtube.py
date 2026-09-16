@@ -28,7 +28,7 @@ SHRUTI_API_URL = os.getenv(
     "SHRUTI_API_URL",
     "https://api01.shrutibots.site",
 ).rstrip("/")
-SHRUTI_API_KEY = os.getenv("SHRUTI_API_KEY", "ShrutiBotsfhGT4c09sFRRuQIB6yCG").strip()
+SHRUTI_API_KEY = os.getenv("SHRUTI_API_KEY", "").strip()
 
 RITESH_API_URL = os.getenv(
     "API_URL",
@@ -39,6 +39,8 @@ RITESH_API_KEY = os.getenv("API_KEY", "riteshfreea6901be19d3f420aad766250").stri
 # Optional official YouTube Data API v3 key. When set, autoplay uses it
 # for language-specific candidate discovery instead of py_yt recommendations.
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "").strip()
+YUKI_API_URL = os.getenv("MEOW_API_URL", "https://music.yukiapi.site").strip()
+YUKI_API_KEY = os.getenv("MEOW_API_KEY", "").strip()
 
 
 class YouTube:
@@ -68,6 +70,8 @@ class YouTube:
         self._api_autoplay_seen = {}
         self._api_autoplay_cache_ttl = 900
         self._api_autoplay_key_logged = False
+        self._yuki_client = None
+        self._yuki_checked = False
 
     # ------------------------------------------------------------------
     # HTTP
@@ -838,6 +842,72 @@ class YouTube:
 
         return "English" if re.fullmatch(r"[\x00-\x7f\W_]+", text) else None
 
+    async def _yuki_search_autoplay(
+        self,
+        language_hint: str | None = None,
+        query: str | None = None,
+        exclude_id: str | None = None,
+    ):
+        """Use Yuki API as the fast YouTube candidate/stream backend.
+
+        YukiAPI documents Search() and GetStream() and uses
+        https://music.yukiapi.site as its default base URL.
+        """
+        if self._yuki_checked and self._yuki_client is False:
+            return None
+        if not self._yuki_checked:
+            self._yuki_checked = True
+            try:
+                from yukiytapi import YukiAPI
+                self._yuki_client = YukiAPI(
+                    base_url=YUKI_API_URL,
+                    api_key=YUKI_API_KEY or None,
+                )
+            except Exception as e:
+                self._yuki_client = False
+                logger.info(f"YukiAPI unavailable; using existing backend: {type(e).__name__}")
+
+        if not self._yuki_client:
+            return None
+
+        if language_hint == "Hindi":
+            q = "Hindi Bollywood movie songs"
+        elif language_hint == "Bhojpuri":
+            q = "Bhojpuri movie songs"
+        elif language_hint:
+            q = f"{language_hint} movie songs"
+        else:
+            q = (query or "").strip() or "Indian movie songs"
+
+        try:
+            results = await self._yuki_client.search(q, limit=10)
+        except Exception as e:
+            logger.warning(f"YukiAPI search failed: {type(e).__name__}: {e}")
+            return None
+
+        candidates = []
+        for item in results or []:
+            vid = getattr(item, "vidid", None) or getattr(item, "id", None)
+            title = getattr(item, "title", "") or ""
+            if not vid or vid == exclude_id:
+                continue
+            low = title.lower()
+            if language_hint == "Bhojpuri" and "bhojpuri" not in low and "भोजपुरी" not in title:
+                continue
+            candidates.append((vid, title, item))
+
+        if not candidates:
+            return None
+
+        vid, title, item = random.choice(candidates)
+        try:
+            stream_url = await self._yuki_client.get_stream(vid, type="audio")
+        except Exception as e:
+            logger.warning(f"YukiAPI stream failed for {vid}: {type(e).__name__}")
+            return None
+
+        return vid, title, stream_url, item
+
     async def _youtube_api_autoplay(
         self,
         video_id: str,
@@ -978,6 +1048,28 @@ class YouTube:
         optional recommendations endpoint is unavailable, so fall back to a
         normal YouTube search when possible.
         """
+        # Prefer Yuki API for fast YouTube search + direct stream.
+        yuki_result = await self._yuki_search_autoplay(
+            language_hint=language_hint,
+            query=query,
+            exclude_id=video_id,
+        )
+        if yuki_result:
+            vid, title, stream_url, item = yuki_result
+            logger.info(f"YukiAPI stream ready for {vid}")
+            return Track(
+                id=vid,
+                channel_name=getattr(item, "channel", "") or "YouTube",
+                duration=getattr(item, "duration", "00:00") or "00:00",
+                duration_sec=getattr(item, "duration_sec", 0) or 0,
+                message_id=0,
+                title=title,
+                thumbnail=getattr(item, "thumbnail", "") or f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
+                url=stream_url,
+                view_count=getattr(item, "views", "") or "",
+                video=video,
+            )
+
         # Prefer the official YouTube Data API when configured. It gives us
         # a larger candidate pool and avoids depending on py_yt's optional
         # Recommendations API.
