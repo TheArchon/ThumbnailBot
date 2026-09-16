@@ -218,6 +218,29 @@ class YouTube:
         return any(word in t for word in blocked)
 
     @staticmethod
+    def _language_key(title: str, channel: str = "") -> str:
+        """Classify autoplay language from title/channel without needing cookies.
+        Bhojpuri is checked before Hindi because both commonly use Devanagari.
+        """
+        t = f"{title or ''} {channel or ''}".lower()
+        if re.search(r"[\u0a00-\u0a7f]", t) or any(k in t for k in (
+            "punjabi", "panjabi", "bhangra", "gurmukhi", "punjabi song",
+        )):
+            return "punjabi"
+        if any(k in t for k in (
+            "bhojpuri", "bhojpuriya", "purvanchal", "nirahua", "khesari",
+            "pawan singh", "rakesh mishra", "pramod premi", "shilpi raj",
+            "ritesh pandey", "ankush raja", "samar singh", "neelkamal",
+        )):
+            return "bhojpuri"
+        # Devanagari without Bhojpuri markers is treated as Hindi.
+        if re.search(r"[\u0900-\u097f]", t) or any(k in t for k in (
+            "hindi", "bollywood", "hindustani", "hindi song", "hindi songs",
+        )):
+            return "hindi"
+        return "unknown"
+
+    @staticmethod
     def _movie_key(title: str) -> str:
         """Get a lightweight movie/source key from common YouTube song titles."""
         t = re.sub(r"\s+", " ", (title or "").lower()).strip()
@@ -236,7 +259,8 @@ class YouTube:
         return re.sub(r"\s+", " ", candidate).strip()
 
     async def _related_from_mix(
-        self, video_id: str, played: set[str], movie_history: set[str] | None = None
+        self, video_id: str, played: set[str], movie_history: set[str] | None = None,
+        language: str = "unknown"
     ) -> Track | None:
         loop = asyncio.get_event_loop()
         try:
@@ -265,6 +289,9 @@ class YouTube:
                 continue
             if self._is_non_music_title(title):
                 continue
+            candidate_language = self._language_key(title, entry.get("channel") or entry.get("uploader") or "")
+            if language != "unknown" and candidate_language != language:
+                continue
             movie_key = self._movie_key(title)
             if movie_key and movie_history and movie_key in movie_history:
                 continue
@@ -291,16 +318,24 @@ class YouTube:
         return None
 
     async def _related_from_search(
-        self, current: Track, played: set[str], movie_history: set[str] | None = None
+        self, current: Track, played: set[str], movie_history: set[str] | None = None,
+        language: str = "unknown"
     ) -> Track | None:
         """Fallback used when YouTube blocks the mix-playlist scrape (common on
         server/cloud IPs without cookies). Reuses the same search backend that
         already powers /play, so it works wherever normal search works."""
+        language_hint = {
+            "hindi": "Hindi Bollywood songs",
+            "bhojpuri": "Bhojpuri songs",
+            "punjabi": "Punjabi songs",
+        }.get(language, "songs")
         queries = []
         if current.channel_name:
-            queries.append(f"{current.channel_name}")
+            queries.append(f"{current.channel_name} {language_hint}")
         if current.title:
-            queries.append(f"{current.title}")
+            queries.append(f"{current.title} {language_hint}")
+        if not queries:
+            queries.append(language_hint)
 
         for query in queries:
             try:
@@ -317,6 +352,10 @@ class YouTube:
 
                 title = data.get("title") or "Unknown"
                 if self._is_non_music_title(title):
+                    continue
+                candidate_channel = data.get("channel", {}).get("name") or ""
+                candidate_language = self._language_key(title, candidate_channel)
+                if language != "unknown" and candidate_language != language:
                     continue
                 movie_key = self._movie_key(title)
                 if movie_key and movie_history and movie_key in movie_history:
@@ -355,6 +394,9 @@ class YouTube:
         played = set(played or [])
         played.add(current.id)
         movie_history = set(movie_history or [])
+        current_language = self._language_key(
+            getattr(current, "title", ""), getattr(current, "channel_name", "")
+        )
         current_movie = self._movie_key(getattr(current, "title", ""))
         if current_movie:
             movie_history.add(current_movie)
@@ -364,10 +406,10 @@ class YouTube:
         # available immediately. Whichever produces a valid unused track first
         # wins, reducing the pause between songs.
         mix_task = asyncio.create_task(
-            self._related_from_mix(current.id, played, movie_history)
+            self._related_from_mix(current.id, played, movie_history, current_language)
         )
         search_task = asyncio.create_task(
-            self._related_from_search(current, played, movie_history)
+            self._related_from_search(current, played, movie_history, current_language)
         )
         try:
             pending = {mix_task, search_task}
