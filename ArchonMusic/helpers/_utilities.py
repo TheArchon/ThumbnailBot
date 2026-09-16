@@ -144,7 +144,7 @@ class Utilities:
             f"● ᴜsᴇʀ ɪᴅ ➠ {user.id if user else 0}\n"
             f"● ɴᴀᴍᴇ ➠ {user_name}\n"
             f"● ᴜsᴇʀɴᴀᴍᴇ ➠ {username}\n\n"
-            f"● ǫᴜᴇʀʏ ➠ {query or 'N/A'}\n"
+            f"● ǫᴜᴇʀʏ ➠ {query or title or 'N/A'}\n"
             f"● sᴛʀᴇᴀᴍᴛʏᴘᴇ ➠ {stream_type or 'youtube'}"
         )
 
