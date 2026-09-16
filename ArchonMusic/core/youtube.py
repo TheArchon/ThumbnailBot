@@ -28,7 +28,7 @@ SHRUTI_API_URL = os.getenv(
     "SHRUTI_API_URL",
     "https://api01.shrutibots.site",
 ).rstrip("/")
-SHRUTI_API_KEY = os.getenv("SHRUTI_API_KEY", "").strip()
+SHRUTI_API_KEY = os.getenv("SHRUTI_API_KEY", "ShrutiBotsfhGT4c09sFRRuQIB6yCG").strip()
 
 RITESH_API_URL = os.getenv(
     "API_URL",
@@ -40,7 +40,7 @@ RITESH_API_KEY = os.getenv("API_KEY", "riteshfreea6901be19d3f420aad766250").stri
 # for language-specific candidate discovery instead of py_yt recommendations.
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "").strip()
 YUKI_API_URL = os.getenv("MEOW_API_URL", "https://music.yukiapi.site").strip()
-YUKI_API_KEY = os.getenv("MEOW_API_KEY", "").strip()
+YUKI_API_KEY = os.getenv("MEOW_API_KEY", "yuki_61d6dff86bf14ab1d3fa21b283bfb9d4").strip()
 
 
 class YouTube:
