@@ -291,7 +291,23 @@ class TgCall(PyTgCalls):
 
         media = queue.get_next(chat_id)
         if not media:
-            if not await db.get_autoplay(chat_id):
+            # The 3-second prefetch worker may still be downloading the next
+            # track. Give it a short head-start and re-check the queue before
+            # starting a second related-search. This prevents an end-of-track
+            # race where StreamEnded fires at the same time as prefetch.
+            prefetch = self.prefetch_tasks.get(chat_id)
+            if prefetch and not prefetch.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(prefetch), timeout=2.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
+                except Exception as e:
+                    logger.debug(f"Prefetch wait failed for {chat_id}: {e}")
+                media = queue.get_next(chat_id)
+
+            if media:
+                pass
+            elif not await db.get_autoplay(chat_id):
                 await self.stop(chat_id)
                 if loading_msg:
                     try:

@@ -28,7 +28,7 @@ SHRUTI_API_URL = os.getenv(
     "SHRUTI_API_URL",
     "https://api01.shrutibots.site",
 ).rstrip("/")
-SHRUTI_API_KEY = os.getenv("SHRUTI_API_KEY", "ShrutiBotsfhGT4c09sFRRuQIB6yCG").strip()
+SHRUTI_API_KEY = os.getenv("SHRUTI_API_KEY", "").strip()
 
 RITESH_API_URL = os.getenv(
     "API_URL",
@@ -808,6 +808,24 @@ class YouTube:
         if re.search(r"[\u0d00-\u0d7f]", text): return "Malayalam"
         if re.search(r"[\u0a80-\u0aff]", text): return "Gujarati"
         if re.search(r"[\u0900-\u097f]", text): return "Hindi"
+
+        # Common Latin-script/transliterated keywords. This matters for titles
+        # such as "Tum Hi Ho", "Kesariya", or Bhojpuri song titles.
+        bhojpuri_words = (
+            "bhojpuri", "bhojpuriya", "desi bhojpuri", "bhojpuriya"
+        )
+        hindi_words = (
+            "bollywood", "hindi song", "hindi songs", "hindi movie",
+            "hindi film", "hindi audio", "hindi video", "hindustani",
+            "aashiqui", "kabir singh", "animal", "jawan", "pathaan",
+            "dunki", "stree", "dangal", "kgf", "kesariya", "tum hi ho",
+            "tera ban jaunga", "apna bana le", "maan meri jaan"
+        )
+        if any(re.search(r"\b" + re.escape(w) + r"\b", text) for w in bhojpuri_words):
+            return "Bhojpuri"
+        if any(re.search(r"\b" + re.escape(w) + r"\b", text) for w in hindi_words):
+            return "Hindi"
+
         return "English" if re.fullmatch(r"[\x00-\x7f\W_]+", text) else None
 
     async def get_related(
@@ -878,9 +896,21 @@ class YouTube:
         # URL/id so autoplay still has a chance to continue.
         search_query = (query or "").strip()
         if language_hint:
-            search_query = f"{search_query} {language_hint} song".strip()
+            if language_hint == "Hindi":
+                search_query = f"{search_query} Hindi Bollywood movie song".strip()
+            elif language_hint == "Bhojpuri":
+                search_query = f"{search_query} Bhojpuri movie song".strip()
+            else:
+                search_query = f"{search_query} {language_hint} song".strip()
         if not search_query:
-            search_query = f"YouTube {video_id}"
+            if language_hint == "Hindi":
+                search_query = "Hindi Bollywood movie songs"
+            elif language_hint == "Bhojpuri":
+                search_query = "Bhojpuri movie songs"
+            elif language_hint:
+                search_query = f"{language_hint} movie songs"
+            else:
+                search_query = f"YouTube {video_id}"
 
         try:
             searcher = VideosSearch(search_query, limit=5, with_live=False)
@@ -902,10 +932,19 @@ class YouTube:
             if candidates:
                 if language_hint:
                     hint = language_hint.lower()
-                    marked = [
-                        c for c in candidates
-                        if hint in str(c.title or "").lower()
-                    ]
+                    marked = []
+                    for c in candidates:
+                        title = str(c.title or "").lower()
+                        if hint in title:
+                            marked.append(c)
+                            continue
+                        if language_hint == "Hindi" and any(
+                            re.search(r"\b" + re.escape(w) + r"\b", title)
+                            for w in ("bollywood", "hindi", "movie", "film")
+                        ):
+                            marked.append(c)
+                        elif language_hint == "Bhojpuri" and "bhojpuri" in title:
+                            marked.append(c)
                     if marked:
                         candidates = marked
                 return random.choice(candidates)
