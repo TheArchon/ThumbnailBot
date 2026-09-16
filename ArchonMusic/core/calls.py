@@ -47,6 +47,23 @@ def _autoplay_language_hint(title: str | None) -> str:
     return "english"
 
 
+async def _get_related_compat(video_id, *, video=False, max_duration=None, query=None, language_hint=None):
+    """Call YouTube.get_related with language support when available.
+
+    This keeps the bot compatible with older youtube.py versions that do not
+    yet accept the language_hint keyword, avoiding autoplay crashes during
+    rolling/partial deployments.
+    """
+    kwargs = {"video": video, "max_duration": max_duration, "query": query}
+    if language_hint:
+        try:
+            return await yt.get_related(video_id, language_hint=language_hint, **kwargs)
+        except TypeError as exc:
+            if "language_hint" not in str(exc):
+                raise
+    return await yt.get_related(video_id, **kwargs)
+
+
 class TgCall(PyTgCalls):
     def __init__(self):
         self.clients = []
@@ -96,7 +113,7 @@ class TgCall(PyTgCalls):
                     if not next_media and await db.get_autoplay(chat_id):
                         if isinstance(media, Track):
                             max_duration = min(int(media.duration_sec * 1.5), 900)
-                            next_media = await yt.get_related(
+                            next_media = await _get_related_compat(
                                 media.id,
                                 video=media.video,
                                 max_duration=max_duration,
@@ -328,7 +345,7 @@ class TgCall(PyTgCalls):
                     media = queue.get_current(chat_id)
                     if not media:
                         max_duration = min(int(current.duration_sec * 1.5), 900)
-                        media = await yt.get_related(
+                        media = await _get_related_compat(
                             current.id,
                             video=current.video,
                             max_duration=max_duration,
@@ -364,7 +381,7 @@ class TgCall(PyTgCalls):
                         queue.remove_current(chat_id)
                         attempts += 1
 
-                        media = await yt.get_related(
+                        media = await _get_related_compat(
                             current.id,
                             video=current.video,
                             max_duration=max_duration,

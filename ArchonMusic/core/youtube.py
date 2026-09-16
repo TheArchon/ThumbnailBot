@@ -776,6 +776,7 @@ class YouTube:
         video: bool = False,
         max_duration: int = 0,
         query: str | None = None,
+        language_hint: str | None = None,
     ) -> Track | None:
         """Get an autoplay candidate without depending on one py_yt API.
 
@@ -809,11 +810,26 @@ class YouTube:
                         ]
 
                     if videos:
-                        track = self._track_from_data(
-                            random.choice(videos),
-                            0,
-                            video,
-                        )
+                        # Prefer candidates whose title matches the current
+                        # track's detected language. Keep a soft fallback so
+                        # autoplay does not stop when metadata is ambiguous.
+                        if language_hint:
+                            matching = []
+                            for candidate in videos:
+                                title = str(candidate.get("title") or "")
+                                hint = language_hint
+                                has_dev = any("\u0900" <= ch <= "\u097f" for ch in title)
+                                bhoj = any(w in title.lower() for w in (
+                                    "bhojpuri", "भोजपुरी", "भोजपुरिया", "का हो",
+                                    "कइसे", "रउआ", "रउरा", "हमार", "तोहार", "बाड़े",
+                                    "बानी", "छठ", "लइकी", "लइका", "सइयाँ", "बलम",
+                                ))
+                                ok = (hint == "hindi" and has_dev) or (hint == "bhojpuri" and bhoj) or (hint == "english" and not has_dev and not bhoj)
+                                if ok:
+                                    matching.append(candidate)
+                            if matching:
+                                videos = matching
+                        track = self._track_from_data(random.choice(videos), 0, video)
                         if track:
                             return track
             else:
@@ -826,6 +842,12 @@ class YouTube:
         # A title/query is preferred; if unavailable, search the current video
         # URL/id so autoplay still has a chance to continue.
         search_query = (query or "").strip()
+        if language_hint == "bhojpuri":
+            search_query = f"Bhojpuri {search_query} song" if search_query else "Bhojpuri latest songs"
+        elif language_hint == "hindi":
+            search_query = f"Hindi {search_query} song" if search_query else "Hindi latest songs"
+        elif language_hint == "english":
+            search_query = f"English {search_query} song" if search_query else "English latest songs"
         if not search_query:
             search_query = f"YouTube {video_id}"
 
@@ -846,6 +868,20 @@ class YouTube:
                 if track:
                     candidates.append(track)
 
+            if candidates and language_hint:
+                def lang_score(track):
+                    title = str(track.title or "")
+                    low = title.lower()
+                    has_dev = any("\u0900" <= ch <= "\u097f" for ch in title)
+                    bhoj = any(w in low for w in (
+                        "bhojpuri", "भोजपुरी", "भोजपुरिया", "का हो", "कइसे",
+                        "रउआ", "रउरा", "हमार", "तोहार", "बाड़े", "बानी", "छठ",
+                        "लइकी", "लइका", "सइयाँ", "बलम",
+                    ))
+                    if language_hint == "hindi": return 2 if has_dev else 0
+                    if language_hint == "bhojpuri": return 2 if bhoj else 0
+                    return 2 if not has_dev and not bhoj else 0
+                candidates.sort(key=lang_score, reverse=True)
             if candidates:
                 return random.choice(candidates)
         except Exception as e:
