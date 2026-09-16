@@ -18,7 +18,7 @@ from ArchonMusic.helpers import Track, utils
 
 # ---------------------------------------------------------------------------
 # API CONFIG
-# SHRUTI is primary, RITESH is fallback, yt-dlp is the last fallback.
+# SHRUTI is the primary provider; yt-dlp is the last fallback.
 #
 # IMPORTANT:
 # /download may return binary media, NOT JSON. Never call response.text()
@@ -28,19 +28,14 @@ SHRUTI_API_URL = os.getenv(
     "SHRUTI_API_URL",
     "https://api01.shrutibots.site",
 ).rstrip("/")
-SHRUTI_API_KEY = os.getenv("SHRUTI_API_KEY", "ShrutiBotsfhGT4c09sFRRuQIB6yCG").strip()
+SHRUTI_API_KEY = os.getenv("SHRUTI_API_KEY", "").strip()
 
-RITESH_API_URL = os.getenv(
-    "API_URL",
-    "https://web.riteshyt.in",
-).rstrip("/")
-RITESH_API_KEY = os.getenv("API_KEY", "riteshfreea6901be19d3f420aad766250").strip()
 
 # Optional official YouTube Data API v3 key. When set, autoplay uses it
 # for language-specific candidate discovery instead of py_yt recommendations.
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "").strip()
 YUKI_API_URL = os.getenv("MEOW_API_URL", "https://music.yukiapi.site").strip()
-YUKI_API_KEY = os.getenv("MEOW_API_KEY", "yuki_61d6dff86bf14ab1d3fa21b283bfb9d4").strip()
+YUKI_API_KEY = os.getenv("MEOW_API_KEY", "").strip()
 
 
 class YouTube:
@@ -502,7 +497,7 @@ class YouTube:
     ) -> Track | None:
         """Find a track quickly; direct YouTube URLs bypass all searching."""
         # A pasted YouTube link is already the requested track.  Do not send
-        # it through SHRUTI/RITESH/local search, which can add seconds and may
+        # it through SHRUTI/local search, which can add seconds and may
         # return a different video.
         direct = await self._direct_youtube_track(query, m_id, video)
         if direct:
@@ -590,7 +585,6 @@ class YouTube:
 
         for name, base, key in (
             ("SHRUTI", SHRUTI_API_URL, SHRUTI_API_KEY),
-            ("RITESH", RITESH_API_URL, RITESH_API_KEY),
         ):
             if not base:
                 continue
@@ -755,16 +749,12 @@ class YouTube:
 
         self._recent_prefetches[cache_key] = now
 
+        # RITESH first; SHRUTI is backup.
         for base, key, name in (
             (
                 SHRUTI_API_URL,
                 SHRUTI_API_KEY,
                 "SHRUTI",
-            ),
-            (
-                RITESH_API_URL,
-                RITESH_API_KEY,
-                "RITESH",
             ),
         ):
             accepted = await self._prefetch_api(
@@ -1424,7 +1414,7 @@ class YouTube:
 
         The old downloader tried many endpoint/parameter combinations for
         every provider. That made a fast SHRUTI response wait behind several
-        RITESH 404/422 probes. We now try the normal /download endpoint once.
+        provider 404/422 probes. We now try the normal /download endpoint once.
         """
         if not base:
             return None
@@ -1493,9 +1483,7 @@ class YouTube:
     ) -> str | None:
         """Return a media URL with fast provider fallback.
 
-        SHRUTI and RITESH are raced together so a 404/401 from RITESH cannot
-        delay a successful SHRUTI stream. yt-dlp is used only if both APIs
-        fail. No media response is decoded as UTF-8.
+        SHRUTI is used first; yt-dlp is used only if the API fails. No media response is decoded as UTF-8.
         """
         video_id = self._video_id(video_id) or str(video_id).strip()
 
@@ -1513,9 +1501,9 @@ class YouTube:
                 return cached_url
             self._stream_cache.pop(cache_key, None)
 
+        # RITESH first; SHRUTI is only the backup provider.
         providers = (
             ("SHRUTI", SHRUTI_API_URL, SHRUTI_API_KEY),
-            ("RITESH", RITESH_API_URL, RITESH_API_KEY),
         )
 
         tasks = [
@@ -1556,7 +1544,7 @@ class YouTube:
             await asyncio.gather(*tasks, return_exceptions=True)
 
         logger.warning(
-            f"SHRUTI/RITESH stream unavailable for {video_id}; "
+            f"SHRUTI stream unavailable for {video_id}; "
             "trying yt-dlp fallback"
         )
 
