@@ -124,16 +124,25 @@ class YouTube:
             results = await _search.next()
             if results and results["result"]:
                 data = results["result"][0]
+                detected_language = self._language_key(
+                    data.get("title", ""), data.get("channel", {}).get("name", "")
+                )
+                # If YouTube omits the language from title/channel, use the
+                # original user query as a second signal. This is important
+                # for autoplay after a direct /play search.
+                if detected_language == "unknown":
+                    detected_language = self._language_key(query, "")
                 return Track(
                     id=data.get("id"),
                     channel_name=data.get("channel", {}).get("name"),
                     duration=data.get("duration"),
                     duration_sec=utils.to_seconds(data.get("duration")) if data.get("duration") else 0,
                     message_id=m_id,
-                    title=data.get("title")[:25],
+                    title=data.get("title"),
                     thumbnail=data.get("thumbnails", [{}])[-1].get("url").split("?")[0],
                     url=data.get("link"),
                     view_count=data.get("viewCount", {}).get("short"),
+                    language=detected_language,
                     video=video,
                 )
         except Exception as e:
@@ -150,11 +159,12 @@ class YouTube:
                     channel_name=data.get("channel", {}).get("name", ""),
                     duration=data.get("duration"),
                     duration_sec=utils.to_seconds(data.get("duration")) if data.get("duration") else 0,
-                    title=data.get("title")[:25],
+                    title=data.get("title"),
                     thumbnail=data.get("thumbnails", [{}])[-1].get("url").split("?")[0],
                     url=data.get("link").split("&list=")[0],
                     user=user,
                     view_count="",
+                    language=self._language_key(data.get("title", ""), data.get("channel", {}).get("name", "")),
                     video=video,
                 )
                 tracks.append(track)
@@ -213,7 +223,7 @@ class YouTube:
         blocked = (
             "episode", "podcast", "interview", "news", "talk show",
             "full show", "full episode", "web series", "webseries",
-            "documentary", "trailer", "teaser", "reaction",
+            "documentary", "trailer", "teaser", "reaction", "reaction video", "behind the scenes", "behind-the-scenes",
         )
         return any(word in t for word in blocked)
 
@@ -224,7 +234,7 @@ class YouTube:
         """
         t = f"{title or ''} {channel or ''}".lower()
         if re.search(r"[\u0a00-\u0a7f]", t) or any(k in t for k in (
-            "punjabi", "panjabi", "bhangra", "gurmukhi", "punjabi song",
+            "punjabi", "panjabi", "bhangra", "gurmukhi", "punjabi song", "punjabi songs", "punjabi music",
         )):
             return "punjabi"
         if any(k in t for k in (
@@ -234,6 +244,12 @@ class YouTube:
             "shilpi raj", "ritesh pandey", "ankush raja", "samar singh",
             "neelkamal singh", "arvind akela kallu", "gunjan singh",
             "priyanka singh", "kalpana", "chhotu chhaliya", "vikas jha",
+            "alok raj", "ashish yadav", "tuntun yadav", "raj bhai",
+            "aadishakti films", "wave music", "saregama hum bhojpuri",
+            "t-series hamaarbhojpuri", "hamaarbhojpuri", "enter10 music bhojpuri",
+            "bhojpuri hit", "bhojpuri lokgeet", "bhojpuri lok geet",
+            "bhojpuri dj", "bhojpuri status", "bhojpuri vivah", "bhojpuri vivah geet",
+            "golu gold", "rajesh khushdil", "vikas bedardi", "arjun rasiya",
         )):
             return "bhojpuri"
         # Common Bhojpuri vocabulary is often present even when YouTube
@@ -243,13 +259,17 @@ class YouTube:
             "बलमा", "पिया जी", "पियवा", "भतार", "लईका", "लइका",
             "करेजा", "रउआ", "तोहरा", "हमरा", "हमार", "तोहार",
             "बाड़े", "बानी", "बाड़ू", "बाड़ू", "निरहुआ", "खेसारी",
-            "पवन सिंह", "शिल्पी राज",
+            "पवन सिंह", "शिल्पी राज", "रउरा", "रउआ के", "हमनी", "तोहसे",
+            "तोहरा बिना", "हमरा बिना", "सईया", "सईयाँ", "बलम", "बबुआ",
+            "लइकी", "लईकी", "चोली", "साड़ी", "सजनी",
         )
         if any(k in t for k in bhojpuri_words):
             return "bhojpuri"
         # Devanagari without Bhojpuri markers is treated as Hindi.
         if re.search(r"[\u0900-\u097f]", t) or any(k in t for k in (
-            "hindi", "bollywood", "hindustani", "hindi song", "hindi songs",
+            "hindi", "bollywood", "hindustani", "hindi song", "hindi songs", "hindi music", "bollywood songs",
+            "t-series", "saregama music", "tips official", "zee music company",
+            "sony music india", "speed records", "punjabi song", "punjabi songs",
         )):
             return "hindi"
         return "unknown"
@@ -322,10 +342,11 @@ class YouTube:
                 channel_name=entry.get("channel") or entry.get("uploader") or "YouTube",
                 duration=self._format_duration(duration),
                 duration_sec=duration,
-                title=title[:25],
+                title=title,
                 thumbnail=thumbnail,
                 url=f"https://www.youtube.com/watch?v={eid}",
                 view_count=self._format_views(entry.get("view_count")),
+                language=candidate_language,
                 video=False,
             )
 
@@ -338,18 +359,33 @@ class YouTube:
         """Fallback used when YouTube blocks the mix-playlist scrape (common on
         server/cloud IPs without cookies). Reuses the same search backend that
         already powers /play, so it works wherever normal search works."""
+        # A direct YouTube link can arrive without a language label. In that
+        # case infer it once from the current title/channel before searching.
+        if language == "unknown":
+            language = self._language_key(
+                getattr(current, "title", ""), getattr(current, "channel_name", "")
+            )
         language_hint = {
-            "hindi": "Hindi Bollywood songs",
-            "bhojpuri": "Bhojpuri songs",
-            "punjabi": "Punjabi songs",
+            "hindi": "Hindi Bollywood songs old new",
+            "bhojpuri": "Bhojpuri songs old new",
+            "punjabi": "Punjabi songs old new",
         }.get(language, "songs")
         queries = []
         if current.channel_name:
+            # Keep the language locked even when YouTube search returns mixed results.
+            queries.append(f"{current.channel_name} {language_hint} official song")
             queries.append(f"{current.channel_name} {language_hint}")
         if current.title:
             queries.append(f"{current.title} {language_hint}")
-        if not queries:
-            queries.append(language_hint)
+        # Always include a language-only pool so old/new songs are not limited
+        # to the current artist/channel. Candidate language is still checked below.
+        queries.append(language_hint)
+        if language == "hindi":
+            queries.append("Hindi songs 90s 2000s 2010s latest Bollywood")
+        elif language == "bhojpuri":
+            queries.append("Bhojpuri old new hit songs")
+        elif language == "punjabi":
+            queries.append("Punjabi old new hit songs")
 
         for query in queries:
             try:
@@ -385,10 +421,11 @@ class YouTube:
                     channel_name=data.get("channel", {}).get("name") or "YouTube",
                     duration=duration_str,
                     duration_sec=duration_sec,
-                    title=title[:25],
+                    title=title,
                     thumbnail=(data.get("thumbnails", [{}])[-1].get("url") or "").split("?")[0] or None,
                     url=data.get("link"),
                     view_count=data.get("viewCount", {}).get("short"),
+                    language=candidate_language,
                     video=False,
                 )
 
@@ -408,7 +445,7 @@ class YouTube:
         played = set(played or [])
         played.add(current.id)
         movie_history = set(movie_history or [])
-        current_language = self._language_key(
+        current_language = getattr(current, "language", "unknown") or self._language_key(
             getattr(current, "title", ""), getattr(current, "channel_name", "")
         )
         current_movie = self._movie_key(getattr(current, "title", ""))
