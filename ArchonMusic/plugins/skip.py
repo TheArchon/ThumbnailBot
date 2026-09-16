@@ -18,7 +18,7 @@ async def _skip(_, m: types.Message):
         pass
 
     # Pass the user so play_next can immediately show the loading message.
-    await ArchonMusic.play_next(m.chat.id, m.from_user.mention)
+    await ArchonMusic.play_next(m.chat.id)
 
     # Send the skip confirmation, then delete it as well.
     try:
