@@ -28,7 +28,7 @@ SHRUTI_API_URL = os.getenv(
     "SHRUTI_API_URL",
     "https://api01.shrutibots.site",
 ).rstrip("/")
-SHRUTI_API_KEY = os.getenv("SHRUTI_API_KEY", "").strip()
+SHRUTI_API_KEY = os.getenv("SHRUTI_API_KEY", "ShrutiBotsfhGT4c09sFRRuQIB6yCG").strip()
 
 RITESH_API_URL = os.getenv(
     "API_URL",
