@@ -22,6 +22,9 @@ class TgCall(PyTgCalls):
     def __init__(self):
         self.clients = []
         self.autoplay_history: dict[int, set] = {}
+        # Background autoplay/next-track preparation. This lets related-track
+        # lookup and media download happen while the current song is playing.
+        self._autoplay_tasks: dict[int, asyncio.Task] = {}
         self._bot_avatar_path: str | None = None
         # Caches each user's downloaded profile-photo file path after the
         # first lookup. Without this, the SAME user replaying/queuing
@@ -46,6 +49,10 @@ class TgCall(PyTgCalls):
         await db.remove_call(chat_id)
         await db.set_loop(chat_id, 0)
         self.autoplay_history.pop(chat_id, None)
+
+        task = self._autoplay_tasks.pop(chat_id, None)
+        if task and not task.done():
+            task.cancel()
 
         try:
             await client.leave_call(chat_id, close=False)
@@ -320,9 +327,53 @@ class TgCall(PyTgCalls):
             return None
 
         history.add(track.id)
+        # Mark system-generated tracks so the UI/avatar code does not try to
+        # resolve a real requesting user.
+        if not getattr(track, "user", None):
+            track.user = "Autoplay"
         queue.add(chat_id, track)
-        return queue.get_current(chat_id)
+        return track
 
+    async def _prepare_track(self, track) -> None:
+        """Resolve/download the next track before it is needed."""
+        if not track or track.file_path:
+            return
+        try:
+            # The configured download API returns a complete local media file.
+            # Downloading it in the background is much faster at song-boundary
+            # time than starting a fresh download after StreamEnded.
+            track.file_path = await yt.download(track.id, video=track.video)
+            if not track.file_path:
+                logger.warning(
+                    f"[_prepare_track] media download returned no file for {track.id}"
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"[_prepare_track] failed for {getattr(track, 'id', '?')}: {e!r}")
+
+    async def _prepare_autoplay(self, chat_id: int, finished) -> None:
+        """Find and download an autoplay track while the current track plays."""
+        try:
+            track = await self._autoplay_next(chat_id, finished)
+            if track:
+                await self._prepare_track(track)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"[_prepare_autoplay] failed for chat {chat_id}: {e!r}")
+        finally:
+            self._autoplay_tasks.pop(chat_id, None)
+
+    def _start_autoplay_prefetch(self, chat_id: int, finished) -> None:
+        if not finished:
+            return
+        old = self._autoplay_tasks.get(chat_id)
+        if old and not old.done():
+            return
+        self._autoplay_tasks[chat_id] = asyncio.create_task(
+            self._prepare_autoplay(chat_id, finished)
+        )
 
     async def play_next(self, chat_id: int) -> None:
         if loop := await db.get_loop(chat_id):
@@ -331,6 +382,31 @@ class TgCall(PyTgCalls):
 
         finished = queue.get_current(chat_id)
         media = queue.get_next(chat_id)
+
+        # If a normal queued track exists, its file is normally already being
+        # prepared by _prefetch_next(). If the queue is empty, wait for the
+        # autoplay prefetch that was started during the previous song.
+        if not media and finished and await db.get_autoplay(chat_id):
+            task = self._autoplay_tasks.get(chat_id)
+            if task and not task.done():
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    pass
+            media = queue.get_current(chat_id)
+
+            # If prefetch could not produce a track, make one synchronous
+            # attempt so autoplay does not silently stop.
+            if not media:
+                media = await self._autoplay_next(chat_id, finished)
+                if media:
+                    await self._prepare_track(media)
+
+        if not media:
+            return await self.stop(chat_id)
+
         try:
             if media.message_id:
                 await app.delete_messages(
@@ -342,55 +418,57 @@ class TgCall(PyTgCalls):
         except Exception:
             pass
 
-        if not media:
-            if finished and await db.get_autoplay(chat_id):
-                media = await self._autoplay_next(chat_id, finished)
-            if not media:
-                return await self.stop(chat_id)
-
         _lang, msg = await asyncio.gather(
             lang.get_lang(chat_id),
             app.send_message(chat_id=chat_id, text="Loading..."),
         )
 
         if not media.file_path:
-            # Stream directly from the download API's URL — ffmpeg plays
-            # off it directly, so this is near-instant vs. waiting for a
-            # full download to disk. Falls back to a full download() only
-            # if the API didn't return valid media for this video (rare).
-            media.file_path = await yt.stream_url(media.id, video=media.video)
-            if not media.file_path:
-                media.file_path, _ = await yt.download(media.id, video=media.video)
-            if not media.file_path:
-                # No retry, no next-track chain — just report the
-                # failure once and stop, exactly one message.
-                await msg.edit_text(
-                    _lang["error_no_file"].format(config.SUPPORT_CHAT)
-                )
-                return await self.stop(chat_id)
+            await self._prepare_track(media)
+
+        if not media.file_path:
+            await msg.edit_text(
+                _lang["error_no_file"].format(config.SUPPORT_CHAT)
+            )
+            return await self.stop(chat_id)
 
         await msg.edit_text(_lang["play_next"])
 
         media.message_id = msg.id
         await self.play_media(chat_id, msg, media)
-        asyncio.create_task(self._prefetch_next(chat_id))
+        self._prefetch_next(chat_id)
 
-    async def _prefetch_next(self, chat_id: int) -> None:
-        """While the current track plays, pre-resolve the streamable URL
-        for whatever's next in queue so play_next() doesn't have to wait
-        on it later. Best-effort only — any failure here is silent since
-        play_next() will just resolve it fresh if this didn't help."""
+    def _prefetch_next(self, chat_id: int) -> None:
+        """Prepare the next queued item, or start autoplay resolution.
+
+        This is deliberately fire-and-forget: the current track keeps playing
+        while the next track is searched/downloaded.
+        """
         try:
             upcoming = queue.get_next(chat_id, check=True)
         except Exception:
             return
-        if not upcoming or upcoming.file_path:
-            return
-        try:
-            upcoming.file_path = await yt.stream_url(upcoming.id, video=upcoming.video)
-        except Exception as e:
-            logger.warning(f"[_prefetch_next] failed for chat {chat_id}: {e!r}")
 
+        if upcoming:
+            asyncio.create_task(self._prepare_track(upcoming))
+            return
+
+        # No manually queued track: resolve autoplay before the current song
+        # ends, so StreamEnded can switch immediately.
+        try:
+            current = queue.get_current(chat_id)
+        except Exception:
+            current = None
+        if current:
+            async def maybe_autoplay():
+                try:
+                    if await db.get_autoplay(chat_id):
+                        self._start_autoplay_prefetch(chat_id, current)
+                except Exception as e:
+                    logger.warning(
+                        f"[_prefetch_next] autoplay check failed for chat {chat_id}: {e!r}"
+                    )
+            asyncio.create_task(maybe_autoplay())
 
     async def ping(self) -> float:
         pings = [client.ping for client in self.clients]

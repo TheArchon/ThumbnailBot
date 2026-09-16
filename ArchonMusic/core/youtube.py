@@ -317,16 +317,31 @@ class YouTube:
         played = set(played or [])
         played.add(current.id)
 
-        related = await self._related_from_mix(current.id, played)
-        if related:
-            return related
-
-        logger.info(
-            f"[Autoplay] Mix returned nothing for {current.id}, trying search fallback."
-        )
-        related = await self._related_from_search(current, played)
-        if related:
-            return related
-
-        logger.warning(f"[Autoplay] No related track found for {current.id}.")
-        return None
+        # Run the two lightweight discovery paths in parallel. On cloud IPs,
+        # YouTube's RD mix can be slow/blocked while VideosSearch is often
+        # available immediately. Whichever produces a valid unused track first
+        # wins, reducing the pause between songs.
+        mix_task = asyncio.create_task(self._related_from_mix(current.id, played))
+        search_task = asyncio.create_task(self._related_from_search(current, played))
+        try:
+            pending = {mix_task, search_task}
+            while pending:
+                done, pending = await asyncio.wait(
+                    pending, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in done:
+                    try:
+                        related = task.result()
+                    except Exception as e:
+                        logger.warning(f"[Autoplay] related lookup failed: {e!r}")
+                        related = None
+                    if related:
+                        for other in pending:
+                            other.cancel()
+                        return related
+            logger.warning(f"[Autoplay] No related track found for {current.id}.")
+            return None
+        finally:
+            for task in (mix_task, search_task):
+                if not task.done():
+                    task.cancel()
