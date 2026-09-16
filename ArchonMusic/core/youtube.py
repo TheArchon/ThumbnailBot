@@ -28,7 +28,7 @@ SHRUTI_API_URL = os.getenv(
     "SHRUTI_API_URL",
     "https://api01.shrutibots.site",
 ).rstrip("/")
-SHRUTI_API_KEY = os.getenv("SHRUTI_API_KEY", "ShrutiBotsfhGT4c09sFRRuQIB6yCG").strip()
+SHRUTI_API_KEY = os.getenv("SHRUTI_API_KEY", "").strip()
 
 RITESH_API_URL = os.getenv(
     "API_URL",
@@ -770,6 +770,46 @@ class YouTube:
     # ------------------------------------------------------------------
     # RELATED / AUTOPLAY
     # ------------------------------------------------------------------
+    @staticmethod
+    def detect_language(title: str | None) -> str | None:
+        """Best-effort song-language detection from the title.
+
+        This is intentionally conservative: explicit language words/scripts are
+        preferred so autoplay can keep Hindi with Hindi, Bhojpuri with Bhojpuri,
+        Punjabi with Punjabi, etc. It is a preference, not a claim about the
+        actual audio language.
+        """
+        text = (title or "").strip().lower()
+        if not text:
+            return None
+
+        explicit = {
+            "bhojpuri": "Bhojpuri", "bhojpuriya": "Bhojpuri",
+            "hindi": "Hindi", "bollywood": "Hindi",
+            "punjabi": "Punjabi", "panjabi": "Punjabi",
+            "tamil": "Tamil", "telugu": "Telugu",
+            "bengali": "Bengali", "bangla": "Bengali",
+            "marathi": "Marathi", "gujarati": "Gujarati",
+            "kannada": "Kannada", "malayalam": "Malayalam",
+            "nepali": "Nepali", "urdu": "Urdu",
+            "odia": "Odia", "oriya": "Odia",
+            "assamese": "Assamese", "rajasthani": "Rajasthani",
+        }
+        for word, language in explicit.items():
+            if re.search(r"\b" + re.escape(word) + r"\b", text):
+                return language
+
+        # Indic scripts are a stronger signal than transliterated Latin titles.
+        if re.search(r"[\u0a00-\u0a7f]", text): return "Punjabi"
+        if re.search(r"[\u0980-\u09ff]", text): return "Bengali"
+        if re.search(r"[\u0b80-\u0bff]", text): return "Tamil"
+        if re.search(r"[\u0c00-\u0c7f]", text): return "Telugu"
+        if re.search(r"[\u0c80-\u0cff]", text): return "Kannada"
+        if re.search(r"[\u0d00-\u0d7f]", text): return "Malayalam"
+        if re.search(r"[\u0a80-\u0aff]", text): return "Gujarati"
+        if re.search(r"[\u0900-\u097f]", text): return "Hindi"
+        return "English" if re.fullmatch(r"[\x00-\x7f\W_]+", text) else None
+
     async def get_related(
         self,
         video_id: str,
@@ -800,6 +840,16 @@ class YouTube:
                         and r.get("id") != video_id
                     ]
 
+                    if language_hint:
+                        lang_words = language_hint.lower()
+                        marked = [
+                            v for v in videos
+                            if lang_words in str(v.get("title") or "").lower()
+                            or lang_words in str(v.get("channel") or "").lower()
+                        ]
+                        if marked:
+                            videos = marked
+
                     if max_duration:
                         videos = [
                             v
@@ -810,26 +860,11 @@ class YouTube:
                         ]
 
                     if videos:
-                        # Prefer candidates whose title matches the current
-                        # track's detected language. Keep a soft fallback so
-                        # autoplay does not stop when metadata is ambiguous.
-                        if language_hint:
-                            matching = []
-                            for candidate in videos:
-                                title = str(candidate.get("title") or "")
-                                hint = language_hint
-                                has_dev = any("\u0900" <= ch <= "\u097f" for ch in title)
-                                bhoj = any(w in title.lower() for w in (
-                                    "bhojpuri", "भोजपुरी", "भोजपुरिया", "का हो",
-                                    "कइसे", "रउआ", "रउरा", "हमार", "तोहार", "बाड़े",
-                                    "बानी", "छठ", "लइकी", "लइका", "सइयाँ", "बलम",
-                                ))
-                                ok = (hint == "hindi" and has_dev) or (hint == "bhojpuri" and bhoj) or (hint == "english" and not has_dev and not bhoj)
-                                if ok:
-                                    matching.append(candidate)
-                            if matching:
-                                videos = matching
-                        track = self._track_from_data(random.choice(videos), 0, video)
+                        track = self._track_from_data(
+                            random.choice(videos),
+                            0,
+                            video,
+                        )
                         if track:
                             return track
             else:
@@ -842,12 +877,8 @@ class YouTube:
         # A title/query is preferred; if unavailable, search the current video
         # URL/id so autoplay still has a chance to continue.
         search_query = (query or "").strip()
-        if language_hint == "bhojpuri":
-            search_query = f"Bhojpuri {search_query} song" if search_query else "Bhojpuri latest songs"
-        elif language_hint == "hindi":
-            search_query = f"Hindi {search_query} song" if search_query else "Hindi latest songs"
-        elif language_hint == "english":
-            search_query = f"English {search_query} song" if search_query else "English latest songs"
+        if language_hint:
+            search_query = f"{search_query} {language_hint} song".strip()
         if not search_query:
             search_query = f"YouTube {video_id}"
 
@@ -868,21 +899,15 @@ class YouTube:
                 if track:
                     candidates.append(track)
 
-            if candidates and language_hint:
-                def lang_score(track):
-                    title = str(track.title or "")
-                    low = title.lower()
-                    has_dev = any("\u0900" <= ch <= "\u097f" for ch in title)
-                    bhoj = any(w in low for w in (
-                        "bhojpuri", "भोजपुरी", "भोजपुरिया", "का हो", "कइसे",
-                        "रउआ", "रउरा", "हमार", "तोहार", "बाड़े", "बानी", "छठ",
-                        "लइकी", "लइका", "सइयाँ", "बलम",
-                    ))
-                    if language_hint == "hindi": return 2 if has_dev else 0
-                    if language_hint == "bhojpuri": return 2 if bhoj else 0
-                    return 2 if not has_dev and not bhoj else 0
-                candidates.sort(key=lang_score, reverse=True)
             if candidates:
+                if language_hint:
+                    hint = language_hint.lower()
+                    marked = [
+                        c for c in candidates
+                        if hint in str(c.title or "").lower()
+                    ]
+                    if marked:
+                        candidates = marked
                 return random.choice(candidates)
         except Exception as e:
             logger.warning(f"Autoplay search fallback failed for {video_id}: {e}")

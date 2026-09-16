@@ -26,44 +26,6 @@ from ArchonMusic import app, config, db, lang, logger, queue, thumb, userbot, yt
 from ArchonMusic.helpers import Media, Track, buttons
 
 
-def _autoplay_language_hint(title: str | None) -> str:
-    """Best-effort language hint from the current track title.
-
-    Autoplay is intentionally conservative: Hindi Devanagari stays Hindi,
-    obvious Bhojpuri titles stay Bhojpuri, and Latin-script titles default to
-    English. This is only a search hint; it never blocks playback.
-    """
-    text = (title or "").lower()
-    bhojpuri_words = (
-        "bhojpuri", "भोजपुरी", "भोजपुरिया", "का हो", "कइसे", "कइला",
-        "रउआ", "रउरा", "हमार", "तोहार", "बाड़े", "बानी", "बाड़ू",
-        "छठ", "लइकी", "लइका", "सइयाँ", "सईयाँ", "बलम", "गवनवा",
-    )
-    if any(word in text for word in bhojpuri_words):
-        return "bhojpuri"
-    # Devanagari strongly indicates Hindi/Hindi-language music in this bot.
-    if any("\u0900" <= ch <= "\u097f" for ch in text):
-        return "hindi"
-    return "english"
-
-
-async def _get_related_compat(video_id, *, video=False, max_duration=None, query=None, language_hint=None):
-    """Call YouTube.get_related with language support when available.
-
-    This keeps the bot compatible with older youtube.py versions that do not
-    yet accept the language_hint keyword, avoiding autoplay crashes during
-    rolling/partial deployments.
-    """
-    kwargs = {"video": video, "max_duration": max_duration, "query": query}
-    if language_hint:
-        try:
-            return await yt.get_related(video_id, language_hint=language_hint, **kwargs)
-        except TypeError as exc:
-            if "language_hint" not in str(exc):
-                raise
-    return await yt.get_related(video_id, **kwargs)
-
-
 class TgCall(PyTgCalls):
     def __init__(self):
         self.clients = []
@@ -113,12 +75,12 @@ class TgCall(PyTgCalls):
                     if not next_media and await db.get_autoplay(chat_id):
                         if isinstance(media, Track):
                             max_duration = min(int(media.duration_sec * 1.5), 900)
-                            next_media = await _get_related_compat(
+                            next_media = await yt.get_related(
                                 media.id,
                                 video=media.video,
                                 max_duration=max_duration,
                                 query=getattr(media, "title", None),
-                                language_hint=_autoplay_language_hint(getattr(media, "title", None)),
+                                language_hint=yt.detect_language(getattr(media, "title", None)),
                             )
                             if next_media:
                                 queue.add(chat_id, next_media)
@@ -188,7 +150,8 @@ class TgCall(PyTgCalls):
             return await self.play_next(chat_id)
 
         ffmpeg_params = (
-            (f"-ss {seek_time} " if seek_time > 1 else "")
+            "-re "
+            + (f"-ss {seek_time} " if seek_time > 1 else "")
             + ("-vn" if not media.video else "")
         ).strip()
 
@@ -328,97 +291,91 @@ class TgCall(PyTgCalls):
 
         media = queue.get_next(chat_id)
         if not media:
-            if await db.get_autoplay(chat_id):
-                if current and isinstance(current, Track):
-                    msg = loading_msg
-                    if not msg:
-                        try:
-                            msg = await app.send_message(
-                                chat_id,
-                                autoplay_skip_text if skip_user else autoplay_next_text,
-                            )
-                        except Exception:
-                            msg = None
-
-                    # Set max duration for autoplay tracks based on current song,
-                    # capped at 15 minutes to avoid extremely long tracks.
-                    media = queue.get_current(chat_id)
-                    if not media:
-                        max_duration = min(int(current.duration_sec * 1.5), 900)
-                        media = await _get_related_compat(
-                            current.id,
-                            video=current.video,
-                            max_duration=max_duration,
-                            query=getattr(current, "title", None),
-                            language_hint=_autoplay_language_hint(getattr(current, "title", None)),
-                        )
-                        if media:
-                            queue.add(chat_id, media)
-
-                    # Autoplay candidates can fail YouTube extraction (including
-                    # bot-check responses). Never end autoplay on the first bad
-                    # candidate; remove it and try another candidate instead.
-                    attempts = 0
-                    while media and attempts < 5:
-                        media = queue.get_current(chat_id)
-                        if not media:
-                            break
-
-                        if not media.file_path:
-                            media.file_path = await yt.download(
-                                media.id, video=media.video
-                            )
-
-                        if media.file_path:
-                            if msg:
-                                media.message_id = msg.id
-                                return await self.play_media(chat_id, msg, media)
-                            return
-
-                        logger.warning(
-                            f"Autoplay candidate failed: {media.id}; trying another candidate"
-                        )
-                        queue.remove_current(chat_id)
-                        attempts += 1
-
-                        media = await _get_related_compat(
-                            current.id,
-                            video=current.video,
-                            max_duration=max_duration,
-                            query=getattr(current, "title", None),
-                            language_hint=_autoplay_language_hint(getattr(current, "title", None)),
-                        )
-                        if media:
-                            queue.add(chat_id, media)
-
-                    await self.stop(chat_id)
-                    if msg:
-                        try:
-                            return await msg.edit_text(queue_finished_text)
-                        except Exception:
-                            return
-                    return await app.send_message(chat_id, queue_finished_text)
-                else:
-                    await self.stop(chat_id)
-                    if loading_msg:
-                        try:
-                            return await loading_msg.edit_text(queue_finished_text)
-                        except Exception:
-                            return
-                    return await app.send_message(chat_id, queue_finished_text)
-            else:
+            if not await db.get_autoplay(chat_id):
                 await self.stop(chat_id)
                 if loading_msg:
                     try:
                         await loading_msg.edit_text(
-                            play_skipped_text.format(skip_user)
-                            + "\n\n" + queue_finished_text
+                            play_skipped_text.format(skip_user) + "\n\n" + queue_finished_text
                         )
                         return
                     except Exception:
                         pass
                 if skip_user:
                     await app.send_message(chat_id, play_skipped_text.format(skip_user))
+                return await app.send_message(chat_id, queue_finished_text)
+
+            # Autoplay is intentionally continuous: when the queue is empty,
+            # keep searching for another track instead of ending the call.
+            # Prefer the language of the track that just finished.
+            if current and isinstance(current, Track):
+                msg = loading_msg
+                if not msg:
+                    try:
+                        msg = await app.send_message(
+                            chat_id,
+                            autoplay_skip_text if skip_user else autoplay_next_text,
+                        )
+                    except Exception:
+                        msg = None
+
+                max_duration = min(int(current.duration_sec * 1.5), 900)
+                language_hint = yt.detect_language(getattr(current, "title", None))
+
+                while await db.get_autoplay(chat_id) and await db.get_call(chat_id):
+                    candidate = None
+                    # Try several candidates before waiting briefly and trying
+                    # again. A failed YouTube extraction must not end autoplay.
+                    for _ in range(8):
+                        try:
+                            candidate = await yt.get_related(
+                                current.id,
+                                video=current.video,
+                                max_duration=max_duration,
+                                query=getattr(current, "title", None),
+                                language_hint=language_hint,
+                            )
+                        except TypeError:
+                            # Compatibility with older YouTube helpers that do
+                            # not accept language_hint.
+                            candidate = await yt.get_related(
+                                current.id,
+                                video=current.video,
+                                max_duration=max_duration,
+                                query=getattr(current, "title", None),
+                            )
+                        if not candidate:
+                            continue
+                        if not candidate.file_path:
+                            candidate.file_path = await yt.download(
+                                candidate.id, video=candidate.video
+                            )
+                        if candidate.file_path:
+                            queue.add(chat_id, candidate)
+                            media = queue.get_next(chat_id)
+                            if media:
+                                media.message_id = msg.id if msg else None
+                                if msg:
+                                    return await self.play_media(chat_id, msg, media)
+                                return await self.play_media(
+                                    chat_id,
+                                    await app.send_message(chat_id, text=play_next_text),
+                                    media,
+                                )
+                        candidate = None
+
+                    # Do not stop the voice chat just because YouTube temporarily
+                    # failed. Keep autoplay alive and retry after a short pause.
+                    await asyncio.sleep(2)
+
+                return
+            else:
+                await self.stop(chat_id)
+                if loading_msg:
+                    try:
+                        return await loading_msg.edit_text(queue_finished_text)
+                    except Exception:
+                        return
                 return await app.send_message(chat_id, queue_finished_text)
 
         # A queued track is available. Reuse the loading message created by /skip.
