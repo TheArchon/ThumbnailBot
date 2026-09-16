@@ -6,7 +6,7 @@ import random
 import yt_dlp
 from py_yt import VideosSearch, Playlist
 from ArchonMusic import logger, config
-from ArchonMusic.helpers import Track, utils
+from ArchonMusic.helpers import Track, utils, FallenApi
 
 API_URL = os.environ.get("SHRUTI_API_URL", "https://api.shrutibots.site")
 
@@ -92,6 +92,7 @@ class YouTube:
             r"([A-Za-z0-9_-]{11}|PL[A-Za-z0-9_-]+)([&?][^\s]*)?"
         )
         self.cookie_dir = "AloneX/cookies"
+        self.fallen_api = FallenApi(API_URL, API_KEY, retries=2, timeout=30)
 
     def get_cookies(self):
         if not os.path.exists(self.cookie_dir):
@@ -184,13 +185,28 @@ class YouTube:
         return tracks
 
     async def download(self, video_id: str, video: bool = False) -> str | None:
+        """Download media with two API paths; never use cookies.
+
+        Some API responses can be HTTP 200 without returning a usable file.
+        In that case fall back to the /api/track -> CDN/Telegram path.
+        """
         if not video_id or len(video_id) < 3:
             return None
 
-        if video:
-            return await download_video(video_id)
-        else:
-            return await download_song(video_id)
+        # Primary downloader.
+        path = await (download_video(video_id) if video else download_song(video_id))
+        if path and os.path.exists(path) and os.path.getsize(path) > 0:
+            return path
+
+        # Fallback downloader for API responses that don't contain a file.
+        try:
+            path = await self.fallen_api.download_track(video_id, video=video)
+            if path and os.path.exists(path) and os.path.getsize(path) > 0:
+                return path
+        except Exception as e:
+            logger.warning(f"[YouTube.download] fallback failed for {video_id}: {e!r}")
+
+        return None
 
     def _format_duration(self, seconds: int) -> str:
         seconds = max(int(seconds or 0), 0)
