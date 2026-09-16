@@ -28,13 +28,17 @@ SHRUTI_API_URL = os.getenv(
     "SHRUTI_API_URL",
     "https://api01.shrutibots.site",
 ).rstrip("/")
-SHRUTI_API_KEY = os.getenv("SHRUTI_API_KEY", "ShrutiBotsfhGT4c09sFRRuQIB6yCG").strip()
+SHRUTI_API_KEY = os.getenv("SHRUTI_API_KEY", "").strip()
 
 RITESH_API_URL = os.getenv(
     "API_URL",
     "https://web.riteshyt.in",
 ).rstrip("/")
 RITESH_API_KEY = os.getenv("API_KEY", "riteshfreea6901be19d3f420aad766250").strip()
+
+# Optional official YouTube Data API v3 key. When set, autoplay uses it
+# for language-specific candidate discovery instead of py_yt recommendations.
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "").strip()
 
 
 class YouTube:
@@ -58,6 +62,12 @@ class YouTube:
         )
 
         self._client = None
+        self._recommendations_checked = False
+        self._recommendations_available = False
+        self._api_autoplay_cache = {}
+        self._api_autoplay_seen = {}
+        self._api_autoplay_cache_ttl = 900
+        self._api_autoplay_key_logged = False
 
     # ------------------------------------------------------------------
     # HTTP
@@ -828,6 +838,131 @@ class YouTube:
 
         return "English" if re.fullmatch(r"[\x00-\x7f\W_]+", text) else None
 
+    async def _youtube_api_autoplay(
+        self,
+        video_id: str,
+        language_hint: str | None = None,
+        query: str | None = None,
+        max_duration: int = 0,
+        video: bool = False,
+    ) -> Track | None:
+        """Find a fresh same-language music candidate through YouTube Data API v3.
+
+        The API returns candidate metadata only; the existing stream provider
+        continues to handle actual audio playback.
+        """
+        if not YOUTUBE_API_KEY:
+            if not self._api_autoplay_key_logged:
+                logger.info(
+                    "YOUTUBE_API_KEY not set; using existing autoplay fallback"
+                )
+                self._api_autoplay_key_logged = True
+            return None
+
+        lang = (language_hint or "").strip()
+        if lang == "Hindi":
+            search_q = "Hindi Bollywood movie songs official"
+            relevance = "hi"
+        elif lang == "Bhojpuri":
+            search_q = "Bhojpuri movie songs official"
+            relevance = None
+        elif lang:
+            search_q = f"{lang} movie songs official"
+            relevance = lang[:2].lower()
+        else:
+            search_q = (query or "Indian movie songs official").strip()
+            relevance = None
+
+        # Keep a candidate pool per language. One API request can return many
+        # videos, so autoplay does not need one API call for every song.
+        now = time.monotonic()
+        cache_key = lang or "default"
+        cached = self._api_autoplay_cache.get(cache_key)
+        if (
+            not cached
+            or now - cached[0] > self._api_autoplay_cache_ttl
+            or not cached[1]
+        ):
+            params = {
+                "part": "snippet",
+                "q": search_q,
+                "type": "video",
+                "videoCategoryId": "10",
+                "maxResults": "25",
+                "regionCode": "IN",
+                "key": YOUTUBE_API_KEY,
+            }
+            if relevance:
+                params["relevanceLanguage"] = relevance
+
+            client = await self.get_client()
+            try:
+                async with client.get(
+                    "https://www.googleapis.com/youtube/v3/search",
+                    params=params,
+                ) as response:
+                    if response.status != 200:
+                        body = (await response.text())[:300]
+                        logger.warning(
+                            f"YouTube Data API autoplay HTTP {response.status}: {body}"
+                        )
+                        return None
+                    payload = await response.json(content_type=None)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(
+                    f"YouTube Data API autoplay failed: {type(e).__name__}: {e}"
+                )
+                return None
+
+            items = payload.get("items", []) if isinstance(payload, dict) else []
+            ids = []
+            for item in items:
+                vid = (
+                    item.get("id", {}).get("videoId")
+                    if isinstance(item.get("id"), dict)
+                    else None
+                )
+                if vid and vid != video_id:
+                    ids.append(vid)
+
+            # De-duplicate while preserving API order.
+            ids = list(dict.fromkeys(ids))
+            self._api_autoplay_cache[cache_key] = (now, ids)
+
+        pool = list(self._api_autoplay_cache.get(cache_key, (0, []))[1])
+        if not pool:
+            return None
+
+        seen = self._api_autoplay_seen.setdefault(cache_key, set())
+        fresh = [vid for vid in pool if vid not in seen and vid != video_id]
+
+        # When the pool is exhausted, start a new cycle but still exclude the
+        # currently playing video.
+        if not fresh:
+            seen.clear()
+            fresh = [vid for vid in pool if vid != video_id]
+
+        if not fresh:
+            return None
+
+        chosen = random.choice(fresh)
+        seen.add(chosen)
+
+        return Track(
+            id=chosen,
+            channel_name="YouTube",
+            duration="00:00",
+            duration_sec=0,
+            message_id=0,
+            title=f"YouTube - {chosen}",
+            thumbnail=f"https://i.ytimg.com/vi/{chosen}/hqdefault.jpg",
+            url=self.base + chosen,
+            view_count="",
+            video=video,
+        )
+
     async def get_related(
         self,
         video_id: str,
@@ -843,10 +978,46 @@ class YouTube:
         optional recommendations endpoint is unavailable, so fall back to a
         normal YouTube search when possible.
         """
-        try:
-            from py_yt import Recommendations
+        # Prefer the official YouTube Data API when configured. It gives us
+        # a larger candidate pool and avoids depending on py_yt's optional
+        # Recommendations API.
+        api_track = await self._youtube_api_autoplay(
+            video_id=video_id,
+            language_hint=language_hint,
+            query=query,
+            max_duration=max_duration,
+            video=video,
+        )
+        if api_track:
+            logger.info(
+                f"YouTube API autoplay candidate selected: {api_track.id}"
+            )
+            return api_track
 
-            get_related = getattr(Recommendations, "getRelated", None)
+        # Some py_yt versions do not expose Recommendations.getRelated().
+        # Detect that once and go straight to the search fallback thereafter.
+        get_related = None
+        if not self._recommendations_checked:
+            self._recommendations_checked = True
+            try:
+                from py_yt import Recommendations
+                get_related = getattr(Recommendations, "getRelated", None)
+                self._recommendations_available = bool(get_related)
+                if not self._recommendations_available:
+                    logger.info("Recommendations.getRelated unavailable; using search fallback")
+            except Exception as e:
+                self._recommendations_available = False
+                logger.info(
+                    f"Recommendations unavailable; using search fallback: {type(e).__name__}"
+                )
+        elif self._recommendations_available:
+            try:
+                from py_yt import Recommendations
+                get_related = getattr(Recommendations, "getRelated", None)
+            except Exception:
+                get_related = None
+
+        try:
             if get_related:
                 results = await get_related(video_id)
 
@@ -885,11 +1056,10 @@ class YouTube:
                         )
                         if track:
                             return track
-            else:
-                logger.info("Recommendations.getRelated unavailable; using search fallback")
-
         except Exception as e:
-            logger.info(f"Related video lookup unavailable; using search fallback: {type(e).__name__}")
+            logger.info(
+                f"Related video lookup unavailable; using search fallback: {type(e).__name__}"
+            )
 
         # Compatibility fallback for py_yt versions without Recommendations.
         # A title/query is preferred; if unavailable, search the current video
