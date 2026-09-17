@@ -20,8 +20,8 @@ class Config:
 
         # Limits
         self.DURATION_LIMIT = int(getenv("DURATION_LIMIT", "99999"))
-        self.QUEUE_LIMIT = int(getenv("QUEUE_LIMIT", "20"))
-        self.PLAYLIST_LIMIT = int(getenv("PLAYLIST_LIMIT", "20"))
+        self.QUEUE_LIMIT = int(getenv("QUEUE_LIMIT", "25"))
+        self.PLAYLIST_LIMIT = int(getenv("PLAYLIST_LIMIT", "25"))
 
         # Assistant Sessions
         self.SESSION1 = getenv("SESSION", None)
@@ -80,7 +80,7 @@ class Config:
 
         self.PING_IMG = getenv(
             "PING_IMG",
-            "https://files.catbox.moe/7hr8ah.jpg"
+            "https://files.catbox.moe/yzl72f.jpg"
         )
 
         # /start image
@@ -88,7 +88,7 @@ class Config:
         # to use another JPG.
         self.START_IMAGE = getenv(
             "START_IMAGE",
-            "https://files.catbox.moe/dno7wv.jpg"
+            "https://files.catbox.moe/voff57.jpg"
         )
 
         # Bot information
