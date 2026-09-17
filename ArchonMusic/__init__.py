@@ -19,6 +19,10 @@ logging.getLogger("pyrogram").setLevel(logging.ERROR)
 logging.getLogger("pytgcalls").setLevel(logging.ERROR)
 logger = logging.getLogger(__name__)
 
+# Define this package attribute early so submodules importing it during
+# package initialization do not trigger a partially-initialized import error.
+ArchonMusic = None
+
 
 __version__ = "3.0.2"
 
@@ -55,7 +59,6 @@ thumb = Thumbnail()
 
 # TgCall is initialized by ArchonMusic.__main__ after the package is fully loaded.
 # Keeping it out of package initialization prevents circular-import crashes.
-ArchonMusic = None
 
 
 async def stop() -> None:
