@@ -3,10 +3,11 @@ import signal
 import importlib
 from contextlib import suppress
 
-from ArchonMusic import (app, config, db, logger,
-                   stop, thumb, userbot, yt)
-from ArchonMusic.core.calls import TgCall
-import ArchonMusic as _pkg
+# Import the package module itself, not individual package attributes.
+# This avoids `from ArchonMusic import ArchonMusic` during module startup,
+# which can trigger a circular-import failure when the package is launched
+# with `python -m ArchonMusic`.
+import ArchonMusic as pkg
 from ArchonMusic.plugins import all_modules
 
 
@@ -19,25 +20,29 @@ async def idle():
             loop.add_signal_handler(sig, stop_event.set)
     await stop_event.wait()
 
+
 async def main():
-    # Initialize voice-call client only after ArchonMusic package initialization.
-    _pkg.ArchonMusic = TgCall()
-    await db.connect()
-    await app.boot()
-    await userbot.boot()
-    await _pkg.ArchonMusic.boot()
+    from ArchonMusic.core.calls import TgCall
+
+    # Create TgCall only after the ArchonMusic package has finished loading.
+    pkg.ArchonMusic = TgCall()
+
+    await pkg.db.connect()
+    await pkg.app.boot()
+    await pkg.userbot.boot()
+    await pkg.ArchonMusic.boot()
 
     for module in all_modules:
         importlib.import_module(f"ArchonMusic.plugins.{module}")
-    logger.info(f"Loaded {len(all_modules)} modules.")
+    pkg.logger.info(f"Loaded {len(all_modules)} modules.")
 
-    sudoers = await db.get_sudoers()
-    app.sudoers.update(sudoers)
-    app.bl_users.update(await db.get_blacklisted())
-    logger.info(f"Loaded {len(app.sudoers)} sudo users.")
+    sudoers = await pkg.db.get_sudoers()
+    pkg.app.sudoers.update(sudoers)
+    pkg.app.bl_users.update(await pkg.db.get_blacklisted())
+    pkg.logger.info(f"Loaded {len(pkg.app.sudoers)} sudo users.")
 
     await idle()
-    await stop()
+    await pkg.stop()
 
 
 if __name__ == "__main__":
