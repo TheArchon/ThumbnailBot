@@ -295,7 +295,7 @@ class YouTube:
             "extractor_retries": 1,
             "extractor_args": {"youtube": {"player_client": ["android"]}},
         }
-        url = f"https://www.youtube.com/watch?v={video_id}&list=RD{video_id}"
+        url = f"https://www.youtube.com/watch?v={video_id}"
         with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(url, download=False)
 
