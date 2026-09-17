@@ -53,8 +53,9 @@ from ArchonMusic.helpers import Queue, Thumbnail
 queue = Queue()
 thumb = Thumbnail()
 
-from ArchonMusic.core.calls import TgCall
-ArchonMusic = TgCall()
+# TgCall is initialized by ArchonMusic.__main__ after the package is fully loaded.
+# Keeping it out of package initialization prevents circular-import crashes.
+ArchonMusic = None
 
 
 async def stop() -> None:

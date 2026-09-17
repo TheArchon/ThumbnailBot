@@ -3,8 +3,10 @@ import signal
 import importlib
 from contextlib import suppress
 
-from ArchonMusic import (ArchonMusic, app, config, db, logger,
+from ArchonMusic import (app, config, db, logger,
                    stop, thumb, userbot, yt)
+from ArchonMusic.core.calls import TgCall
+import ArchonMusic as _pkg
 from ArchonMusic.plugins import all_modules
 
 
@@ -18,17 +20,16 @@ async def idle():
     await stop_event.wait()
 
 async def main():
+    # Initialize voice-call client only after ArchonMusic package initialization.
+    _pkg.ArchonMusic = TgCall()
     await db.connect()
     await app.boot()
     await userbot.boot()
-    await ArchonMusic.boot()
+    await _pkg.ArchonMusic.boot()
 
     for module in all_modules:
         importlib.import_module(f"ArchonMusic.plugins.{module}")
     logger.info(f"Loaded {len(all_modules)} modules.")
-
-    if config.COOKIES_URL:
-        await yt.save_cookies(config.COOKIES_URL)
 
     sudoers = await db.get_sudoers()
     app.sudoers.update(sudoers)
