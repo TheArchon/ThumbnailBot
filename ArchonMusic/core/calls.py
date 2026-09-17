@@ -9,8 +9,24 @@ from pyrogram.types import InputMediaPhoto, Message
 from pytgcalls import PyTgCalls, exceptions, types
 from pytgcalls.pytgcalls_session import PyTgCallsSession
 
-from ArchonMusic import (app, config, db, lang, logger,
-                   queue, thumb, userbot, yt)
+import ArchonMusic as _archon
+
+
+class _ArchonProxy:
+    """Resolve package globals lazily to avoid ArchonMusic circular imports."""
+    def __getattr__(self, name):
+        return getattr(_archon, name)
+
+
+app = _ArchonProxy()
+config = _ArchonProxy()
+db = _ArchonProxy()
+lang = _ArchonProxy()
+logger = _ArchonProxy()
+queue = _ArchonProxy()
+thumb = _ArchonProxy()
+userbot = _ArchonProxy()
+yt = _ArchonProxy()
 from ArchonMusic.helpers import Media, Track, buttons
 
 
