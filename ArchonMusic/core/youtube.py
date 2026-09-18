@@ -16,8 +16,27 @@ API_KEY = os.environ.get("SHRUTI_API_KEY", "ShrutiBotsfhGT4c09sFRRuQIB6yCG") ## 
 DOWNLOAD_DIR = "downloads"
 
 
+def _youtube_id(value: str) -> str:
+    """Return a clean YouTube video id from an id or common YouTube URL."""
+    value = (value or "").strip()
+    if not value:
+        return ""
+    patterns = (
+        r"(?:v=|vi=)([A-Za-z0-9_-]{6,})",
+        r"youtu\.be/([A-Za-z0-9_-]{6,})",
+        r"youtube\.com/shorts/([A-Za-z0-9_-]{6,})",
+        r"youtube\.com/embed/([A-Za-z0-9_-]{6,})",
+        r"youtube\.com/live/([A-Za-z0-9_-]{6,})",
+    )
+    for pattern in patterns:
+        m = re.search(pattern, value)
+        if m:
+            return m.group(1)
+    return value if re.fullmatch(r"[A-Za-z0-9_-]{6,}", value) else ""
+
+
 async def download_song(link: str) -> str:
-    video_id = link.split("v=")[-1].split("&")[0] if "v=" in link else link
+    video_id = _youtube_id(link)
     if not video_id or len(video_id) < 3:
         return None
 
@@ -51,7 +70,7 @@ async def download_song(link: str) -> str:
 
 
 async def download_video(link: str) -> str:
-    video_id = link.split("v=")[-1].split("&")[0] if "v=" in link else link
+    video_id = _youtube_id(link)
     if not video_id or len(video_id) < 3:
         return None
 
@@ -122,40 +141,48 @@ class YouTube:
 
     async def search(self, query: str, m_id: int, video: bool = False) -> Track | None:
         try:
+            video_id = _youtube_id(query) if self.valid(query) else ""
+            if video_id:
+                # Direct URL: do not send the URL to VideosSearch. Resolve metadata
+                # directly, then the normal download() path handles the media.
+                def resolve():
+                    opts = {"quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": True}
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        return ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+                data = await asyncio.get_event_loop().run_in_executor(None, resolve)
+                if not data:
+                    return None
+                duration_sec = int(data.get("duration") or 0)
+                thumb = data.get("thumbnail") or None
+                channel = data.get("channel") or data.get("uploader") or "YouTube"
+                title = data.get("title") or video_id
+                track = Track(
+                    id=video_id, channel_name=channel, duration=self._format_duration(duration_sec),
+                    duration_sec=duration_sec, message_id=m_id, title=title, thumbnail=thumb,
+                    url=f"https://www.youtube.com/watch?v={video_id}",
+                    view_count=str(data.get("view_count") or ""), video=video,
+                )
+                track.language = self._language_key(title, channel)
+                return track
+
             _search = VideosSearch(query, limit=1)
             results = await _search.next()
-            if results and results["result"]:
+            if results and results.get("result"):
                 data = results["result"][0] or {}
                 channel = data.get("channel") or {}
                 thumbnails = data.get("thumbnails") or []
-                thumb_url = ""
-                if thumbnails:
-                    last_thumb = thumbnails[-1] or {}
-                    thumb_url = last_thumb.get("url") or ""
-                    if thumb_url:
-                        thumb_url = thumb_url.split("?", 1)[0]
-                detected_language = self._language_key(
-                    data.get("title", ""), channel.get("name", "")
-                )
-                # If YouTube omits the language from title/channel, use the
-                # original user query as a second signal. This is important
-                # for autoplay after a direct /play search.
+                thumb_url = ((thumbnails[-1] or {}).get("url") or "").split("?", 1)[0] if thumbnails else ""
+                detected_language = self._language_key(data.get("title", ""), channel.get("name", ""))
                 if detected_language == "unknown":
                     detected_language = self._language_key(query, "")
                 track = Track(
-                    id=data.get("id"),
-                    channel_name=channel.get("name") or "YouTube",
-                    duration=data.get("duration"),
-                    duration_sec=utils.to_seconds(data.get("duration")) if data.get("duration") else 0,
-                    message_id=m_id,
-                    title=data.get("title"),
-                    thumbnail=thumb_url or None,
-                    url=data.get("link"),
+                    id=data.get("id"), channel_name=channel.get("name") or "YouTube",
+                    duration=data.get("duration"), duration_sec=utils.to_seconds(data.get("duration")) if data.get("duration") else 0,
+                    message_id=m_id, title=data.get("title"), thumbnail=thumb_url or None,
+                    url=(data.get("link") or "").split("&list=")[0],
                     view_count=(data.get("viewCount") or {}).get("short") if isinstance(data.get("viewCount"), dict) else str(data.get("viewCount") or ""),
                     video=video,
                 )
-                # Keep compatibility with older Track dataclasses that do not
-                # declare a language field.
                 track.language = detected_language
                 return track
         except Exception as e:
@@ -191,7 +218,8 @@ class YouTube:
         Some API responses can be HTTP 200 without returning a usable file.
         In that case fall back to the /api/track -> CDN/Telegram path.
         """
-        if not video_id or len(video_id) < 3:
+        video_id = _youtube_id(video_id)
+        if not video_id:
             return None
 
         # Primary downloader.
