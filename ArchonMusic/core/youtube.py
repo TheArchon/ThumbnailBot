@@ -2,14 +2,18 @@ import os
 import re
 import asyncio
 import aiohttp
-import random
 from pathlib import Path
-import yt_dlp
 from py_yt import VideosSearch, Playlist
 from ArchonMusic import logger, config
 from ArchonMusic.helpers import Track, utils, FallenApi
 
-API_URL = os.environ.get("SHRUTI_API_URL", "https://api.shrutibots.site")
+API_URL = os.environ.get("SHRUTI_API_URL", "https://api01.shrutibots.site").rstrip("/")
+API_URLS = list(dict.fromkeys([
+    API_URL,
+    "https://api01.shrutibots.site",
+    "https://api.shrutibots.site",
+    "https://shrutibots.site",
+]))
 
 API_KEY = os.environ.get("SHRUTI_API_KEY", "ShrutiBotsfhGT4c09sFRRuQIB6yCG") ## Get This API KEY FROM TELEGRAM BOT USERNAME: @SHRUTIAPIBOT
 
@@ -35,72 +39,45 @@ def _youtube_id(value: str) -> str:
     return value if re.fullmatch(r"[A-Za-z0-9_-]{6,}", value) else ""
 
 
-async def download_song(link: str) -> str:
-    video_id = _youtube_id(link)
-    if not video_id or len(video_id) < 3:
-        return None
-
+async def _download_from_api(video_id: str, media_type: str, timeout: int) -> str | None:
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp3")
+    ext = "mp4" if media_type == "video" else "mp3"
+    file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.{ext}")
     if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
         return file_path
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{API_URL}/download",
-                params={"url": video_id, "type": "audio", "api_key": API_KEY},
-                timeout=aiohttp.ClientTimeout(total=300)
-            ) as resp:
-                if resp.status != 200:
-                    return None
-                with open(file_path, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(131072):
-                        f.write(chunk)
-        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-            return file_path
-        return None
-    except Exception:
+    for api_url in API_URLS:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{api_url}/download",
+                    params={"url": video_id, "type": media_type, "api_key": API_KEY},
+                    timeout=aiohttp.ClientTimeout(total=timeout),
+                ) as resp:
+                    if resp.status != 200:
+                        continue
+                    with open(file_path, "wb") as f:
+                        async for chunk in resp.content.iter_chunked(131072):
+                            if chunk:
+                                f.write(chunk)
+            if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                return file_path
+        except Exception as e:
+            logger.warning(f"[YouTube.API] {api_url} {media_type} failed for {video_id}: {e!r}")
         if os.path.exists(file_path):
             try:
                 os.remove(file_path)
-            except Exception:
+            except OSError:
                 pass
-        return None
+    return None
+
+
+async def download_song(link: str) -> str:
+    return await _download_from_api(_youtube_id(link), "audio", 300) if _youtube_id(link) else None
 
 
 async def download_video(link: str) -> str:
-    video_id = _youtube_id(link)
-    if not video_id or len(video_id) < 3:
-        return None
-
-    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp4")
-    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-        return file_path
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{API_URL}/download",
-                params={"url": video_id, "type": "video", "api_key": API_KEY},
-                timeout=aiohttp.ClientTimeout(total=600)
-            ) as resp:
-                if resp.status != 200:
-                    return None
-                with open(file_path, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(131072):
-                        f.write(chunk)
-        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-            return file_path
-        return None
-    except Exception:
-        if os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-            except Exception:
-                pass
-        return None
+    return await _download_from_api(_youtube_id(link), "video", 600) if _youtube_id(link) else None
 
 
 class YouTube:
@@ -114,28 +91,6 @@ class YouTube:
         self.cookie_dir = "AloneX/cookies"
         self.fallen_api = FallenApi(API_URL, API_KEY, retries=2, timeout=30)
 
-    def get_cookies(self):
-        if not os.path.exists(self.cookie_dir):
-            return None
-        cookies_files = [f for f in os.listdir(self.cookie_dir) if f.endswith(".txt")]
-        if not cookies_files:
-            return None
-        return os.path.join(self.cookie_dir, random.choice(cookies_files))
-
-    async def save_cookies(self, urls: list[str]) -> None:
-        logger.info("Saving cookies from urls...")
-        if not os.path.exists(self.cookie_dir):
-            os.makedirs(self.cookie_dir)
-        async with aiohttp.ClientSession() as session:
-            for i, url in enumerate(urls):
-                path = f"{self.cookie_dir}/cookie_{i}.txt"
-                link = "https://batbin.me/api/v2/paste/" + url.split("/")[-1]
-                async with session.get(link) as resp:
-                    resp.raise_for_status()
-                    with open(path, "wb") as fw:
-                        fw.write(await resp.read())
-        logger.info(f"Cookies saved in {self.cookie_dir}.")
-
     def valid(self, url: str) -> bool:
         return bool(re.match(self.regex, url))
 
@@ -143,19 +98,31 @@ class YouTube:
         try:
             video_id = _youtube_id(query) if self.valid(query) else ""
             if video_id:
-                # Direct URL: do not send the URL to VideosSearch. Resolve metadata
-                # directly, then the normal download() path handles the media.
-                def resolve():
-                    opts = {"quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": True}
-                    with yt_dlp.YoutubeDL(opts) as ydl:
-                        return ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-                data = await asyncio.get_event_loop().run_in_executor(None, resolve)
-                if not data:
-                    return None
-                duration_sec = int(data.get("duration") or 0)
-                thumb = data.get("thumbnail") or None
-                channel = data.get("channel") or data.get("uploader") or "YouTube"
-                title = data.get("title") or video_id
+                # Direct URL: never ask yt-dlp/YouTube for metadata.
+                # YouTube can block cloud IPs with an anti-bot challenge even
+                # before media download. oEmbed is metadata-only and needs no
+                # cookies; if it is unavailable we still keep the supplied ID
+                # and let the download API handle the media.
+                data = {}
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(
+                            "https://www.youtube.com/oembed",
+                            params={
+                                "url": f"https://www.youtube.com/watch?v={video_id}",
+                                "format": "json",
+                            },
+                            timeout=aiohttp.ClientTimeout(total=8),
+                        ) as resp:
+                            if resp.status == 200:
+                                data = await resp.json(content_type=None)
+                except Exception as e:
+                    logger.warning(f"[YouTube.oEmbed] metadata unavailable for {video_id}: {e!r}")
+
+                duration_sec = 0
+                thumb = data.get("thumbnail_url") or None
+                channel = data.get("author_name") or "YouTube"
+                title = data.get("title") or f"YouTube {video_id}"
                 track = Track(
                     id=video_id, channel_name=channel, duration=self._format_duration(duration_sec),
                     duration_sec=duration_sec, message_id=m_id, title=title, thumbnail=thumb,
@@ -236,60 +203,9 @@ class YouTube:
         except Exception as e:
             logger.warning(f"[YouTube.download] API fallback failed for {video_id}: {e!r}")
 
-        # Final fallback: yt-dlp directly, WITHOUT cookies. Use a small set of
-        # public YouTube clients because cloud IPs can fail on one client while
-        # another still exposes the media formats.
-        path = await self._direct_ytdlp_download(video_id, video=video)
-        if path and os.path.exists(path) and os.path.getsize(path) > 0:
-            return path
-
-        return None
-
-    async def _direct_ytdlp_download(self, video_id: str, video: bool = False) -> str | None:
-        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-        ext = "mp4" if video else "m4a"
-        output = os.path.join(DOWNLOAD_DIR, f"{video_id}.%(ext)s")
-        url = f"https://www.youtube.com/watch?v={video_id}"
-        clients = [
-            ["android"],
-            ["android_vr"],
-            ["tv_embedded"],
-            ["web_safari"],
-        ]
-
-        def run(client):
-            opts = {
-                "quiet": True,
-                "no_warnings": True,
-                "noplaylist": True,
-                "ignoreerrors": False,
-                "retries": 1,
-                "fragment_retries": 1,
-                "socket_timeout": 20,
-                "geo_bypass": True,
-                "outtmpl": output,
-                "extractor_args": {"youtube": {"player_client": client}},
-            }
-            if video:
-                opts["format"] = "best[ext=mp4]/best"
-            else:
-                opts["format"] = "bestaudio/best"
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([url])
-
-        for client in clients:
-            try:
-                await asyncio.get_event_loop().run_in_executor(None, run, client)
-                candidates = [
-                    os.path.join(DOWNLOAD_DIR, f"{video_id}.{e}")
-                    for e in ("m4a", "webm", "mp4", "opus", "aac")
-                ]
-                candidates += [str(x) for x in Path(DOWNLOAD_DIR).glob(f"{video_id}.*")]
-                for candidate in candidates:
-                    if os.path.isfile(candidate) and os.path.getsize(candidate) > 0:
-                        return candidate
-            except Exception as e:
-                logger.warning(f"[YouTube.direct] client={client[0]} failed for {video_id}: {e!r}")
+        # Do not fall back to direct yt-dlp. On Heroku/Salesforce cloud IPs
+        # YouTube may return an anti-bot challenge; retrying with other player
+        # clients does not solve that reliably and would only spam the logs.
         return None
 
     def _format_duration(self, seconds: int) -> str:
