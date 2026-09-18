@@ -31,7 +31,7 @@ def checkUB(play):
         url = utils.get_url(m)
         if url and not yt.valid(url):
             return await m.reply_text(m.lang["play_not_found"].format(config.SUPPORT_CHAT))
-        m3u8 = url and not yt.valid(url)
+        m3u8 = bool(url and url.lower().endswith((".m3u8", ".m3u8?")))
 
         play_mode = await db.get_play_mode(chat_id)
         if play_mode or force:
