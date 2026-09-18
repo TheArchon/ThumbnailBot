@@ -9,10 +9,8 @@ from pyrogram.types import InputMediaPhoto, Message
 from pytgcalls import PyTgCalls, exceptions, types
 from pytgcalls.pytgcalls_session import PyTgCallsSession
 
-import ArchonMusic as _pkg
-
-def _get(name):
-    return getattr(_pkg, name)
+from ArchonMusic import (app, config, db, lang, logger,
+                   queue, thumb, userbot, yt)
 from ArchonMusic.helpers import Media, Track, buttons
 
 
@@ -36,20 +34,20 @@ class TgCall(PyTgCalls):
         self._user_avatar_cache: dict[int, str | None] = {}
 
     async def pause(self, chat_id: int) -> bool:
-        client = await _get("db").get_assistant(chat_id)
-        await _get("db").playing(chat_id, paused=True)
+        client = await db.get_assistant(chat_id)
+        await db.playing(chat_id, paused=True)
         return await client.pause(chat_id)
 
     async def resume(self, chat_id: int) -> bool:
-        client = await _get("db").get_assistant(chat_id)
-        await _get("db").playing(chat_id, paused=False)
+        client = await db.get_assistant(chat_id)
+        await db.playing(chat_id, paused=False)
         return await client.resume(chat_id)
 
     async def stop(self, chat_id: int) -> None:
-        client = await _get("db").get_assistant(chat_id)
-        _get("queue").clear(chat_id)
-        await _get("db").remove_call(chat_id)
-        await _get("db").set_loop(chat_id, 0)
+        client = await db.get_assistant(chat_id)
+        queue.clear(chat_id)
+        await db.remove_call(chat_id)
+        await db.set_loop(chat_id, 0)
         self.autoplay_history.pop(chat_id, None)
 
         task = self._autoplay_tasks.pop(chat_id, None)
@@ -104,7 +102,7 @@ class TgCall(PyTgCalls):
             # system-queued tracks nobody explicitly requested — this is
             # expected, not an error, so don't spam the logs for it.
             if not (isinstance(candidate, str) and candidate.strip().lower() == "autoplay"):
-                _get("logger").warning(
+                logger.warning(
                     "[_fetch_user_avatar] could not resolve a usable user id; "
                     f"media.user was type={type(candidate).__name__!r} value={candidate!r}"
                 )
@@ -115,15 +113,15 @@ class TgCall(PyTgCalls):
 
         result = None
         try:
-            async for photo in _get("app").get_chat_photos(user_id, limit=1):
-                result = await _get("app").download_media(photo.file_id)
+            async for photo in app.get_chat_photos(user_id, limit=1):
+                result = await app.download_media(photo.file_id)
                 break
             else:
-                _get("logger").warning(
+                logger.warning(
                     f"[_fetch_user_avatar] user {user_id} has no profile photo"
                 )
         except Exception as e:
-            _get("logger").warning(f"[_fetch_user_avatar] failed for user {user_id}: {e!r}")
+            logger.warning(f"[_fetch_user_avatar] failed for user {user_id}: {e!r}")
 
         self._user_avatar_cache[user_id] = result
         return result
@@ -139,13 +137,13 @@ class TgCall(PyTgCalls):
         if self._bot_avatar_path:
             return self._bot_avatar_path
         try:
-            me = await _get("app").get_me()
+            me = await app.get_me()
             if me.photo:
-                self._bot_avatar_path = await _get("app").download_media(me.photo.big_file_id)
+                self._bot_avatar_path = await app.download_media(me.photo.big_file_id)
                 return self._bot_avatar_path
-            _get("logger").warning("[_fetch_bot_avatar] bot has no profile photo")
+            logger.warning("[_fetch_bot_avatar] bot has no profile photo")
         except Exception as e:
-            _get("logger").warning(f"[_fetch_bot_avatar] failed: {e!r}")
+            logger.warning(f"[_fetch_bot_avatar] failed: {e!r}")
         return None
 
 
@@ -163,12 +161,12 @@ class TgCall(PyTgCalls):
         # been moved to `_send_now_playing`, which now runs as a
         # fire-and-forget background task AFTER playback has started.
         client, _lang = await asyncio.gather(
-            _get("db").get_assistant(chat_id),
-            _get("lang").get_lang(chat_id),
+            db.get_assistant(chat_id),
+            lang.get_lang(chat_id),
         )
 
         if not media.file_path:
-            await message.edit_text(_lang["error_no_file"].format(_get("config").SUPPORT_CHAT))
+            await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
             return await self.stop(chat_id)
 
         # Auto-reconnect if the download API's connection drops mid-stream
@@ -203,7 +201,7 @@ class TgCall(PyTgCalls):
             )
             if not seek_time:
                 media.time = 1
-                await _get("db").add_call(chat_id)
+                await db.add_call(chat_id)
                 # Playback has already started at this point. Sending the
                 # "now playing" message/thumbnail is UI-only and must not
                 # delay the next line of audio, so it runs in the
@@ -212,7 +210,7 @@ class TgCall(PyTgCalls):
                     self._send_now_playing(chat_id, message, media, _lang)
                 )
         except FileNotFoundError:
-            await message.edit_text(_lang["error_no_file"].format(_get("config").SUPPORT_CHAT))
+            await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
             await self.stop(chat_id)
         except exceptions.NoActiveGroupCall:
             await self.stop(chat_id)
@@ -251,13 +249,13 @@ class TgCall(PyTgCalls):
         here is logged and swallowed — it must never crash or block
         anything else, since playback is already underway."""
         try:
-            _thumb_mode = await _get("db").get_thumb_mode(chat_id)
+            _thumb_mode = await db.get_thumb_mode(chat_id)
             _thumb = None
-            if _get("config").THUMB_GEN and _thumb_mode:
+            if config.THUMB_GEN and _thumb_mode:
                 if isinstance(media, Track):
-                    _thumb = await _get("thumb").generate(media, user_avatar=None)
+                    _thumb = await thumb.generate(media, user_avatar=None)
                 else:
-                    _thumb = _get("config").DEFAULT_THUMB
+                    _thumb = config.DEFAULT_THUMB
 
             title = media.title or ""
             title = title.split("#")[0].strip()
@@ -284,30 +282,30 @@ class TgCall(PyTgCalls):
                     await message.edit_text(text, reply_markup=keyboard)
             except (ChatSendMediaForbidden, ChatSendPhotosForbidden, MessageIdInvalid):
                 if _thumb:
-                    sent = await _get("app").send_photo(
+                    sent = await app.send_photo(
                         chat_id=chat_id,
                         photo=_thumb,
                         caption=text,
                         reply_markup=keyboard,
                     )
                 else:
-                    sent = await _get("app").send_message(
+                    sent = await app.send_message(
                         chat_id=chat_id,
                         text=text,
                         reply_markup=keyboard,
                     )
                 media.message_id = sent.id
         except Exception as e:
-            _get("logger").warning(f"[_send_now_playing] failed for chat {chat_id}: {e!r}")
+            logger.warning(f"[_send_now_playing] failed for chat {chat_id}: {e!r}")
 
 
     async def replay(self, chat_id: int) -> None:
-        if not await _get("db").get_call(chat_id):
+        if not await db.get_call(chat_id):
             return
 
-        media = _get("queue").get_current(chat_id)
-        _lang = await _get("lang").get_lang(chat_id)
-        msg = await _get("app").send_message(chat_id=chat_id, text=_lang["play_again"])
+        media = queue.get_current(chat_id)
+        _lang = await lang.get_lang(chat_id)
+        msg = await app.send_message(chat_id=chat_id, text=_lang["play_again"])
         media.message_id = msg.id
         await self.play_media(chat_id, msg, media)
 
@@ -322,7 +320,7 @@ class TgCall(PyTgCalls):
 
         # YouTube exposes get_related() in this repo; autoplay_track() does not exist.
         # Use the existing related/mix + search fallback and keep the played-history.
-        track = await _get("yt").get_related(finished, played=list(history))
+        track = await yt.get_related(finished, played=list(history))
         if not track:
             return None
 
@@ -331,7 +329,7 @@ class TgCall(PyTgCalls):
         # resolve a real requesting user.
         if not getattr(track, "user", None):
             track.user = "Autoplay"
-        _get("queue").add(chat_id, track)
+        queue.add(chat_id, track)
         return track
 
     async def _prepare_track(self, track) -> None:
@@ -342,15 +340,15 @@ class TgCall(PyTgCalls):
             # The configured download API returns a complete local media file.
             # Downloading it in the background is much faster at song-boundary
             # time than starting a fresh download after StreamEnded.
-            track.file_path = await _get("yt").download(track.id, video=track.video)
+            track.file_path = await yt.download(track.id, video=track.video)
             if not track.file_path:
-                _get("logger").warning(
+                logger.warning(
                     f"[_prepare_track] media download returned no file for {track.id}"
                 )
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            _get("logger").warning(f"[_prepare_track] failed for {getattr(track, 'id', '?')}: {e!r}")
+            logger.warning(f"[_prepare_track] failed for {getattr(track, 'id', '?')}: {e!r}")
 
     async def _prepare_autoplay(self, chat_id: int, finished) -> None:
         """Find and download an autoplay track while the current track plays."""
@@ -361,7 +359,7 @@ class TgCall(PyTgCalls):
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            _get("logger").warning(f"[_prepare_autoplay] failed for chat {chat_id}: {e!r}")
+            logger.warning(f"[_prepare_autoplay] failed for chat {chat_id}: {e!r}")
         finally:
             self._autoplay_tasks.pop(chat_id, None)
 
@@ -376,17 +374,17 @@ class TgCall(PyTgCalls):
         )
 
     async def play_next(self, chat_id: int) -> None:
-        if loop := await _get("db").get_loop(chat_id):
-            await _get("db").set_loop(chat_id, loop - 1)
+        if loop := await db.get_loop(chat_id):
+            await db.set_loop(chat_id, loop - 1)
             return await self.replay(chat_id)
 
-        finished = _get("queue").get_current(chat_id)
-        media = _get("queue").get_next(chat_id)
+        finished = queue.get_current(chat_id)
+        media = queue.get_next(chat_id)
 
         # If a normal queued track exists, its file is normally already being
         # prepared by _prefetch_next(). If the queue is empty, wait for the
         # autoplay prefetch that was started during the previous song.
-        if not media and finished and await _get("db").get_autoplay(chat_id):
+        if not media and finished and await db.get_autoplay(chat_id):
             task = self._autoplay_tasks.get(chat_id)
             if task and not task.done():
                 try:
@@ -395,7 +393,7 @@ class TgCall(PyTgCalls):
                     raise
                 except Exception:
                     pass
-            media = _get("queue").get_current(chat_id)
+            media = queue.get_current(chat_id)
 
             # If prefetch could not produce a track, make one synchronous
             # attempt so autoplay does not silently stop.
@@ -409,7 +407,7 @@ class TgCall(PyTgCalls):
 
         try:
             if media.message_id:
-                await _get("app").delete_messages(
+                await app.delete_messages(
                     chat_id=chat_id,
                     message_ids=media.message_id,
                     revoke=True,
@@ -419,8 +417,8 @@ class TgCall(PyTgCalls):
             pass
 
         _lang, msg = await asyncio.gather(
-            _get("lang").get_lang(chat_id),
-            _get("app").send_message(chat_id=chat_id, text="Loading..."),
+            lang.get_lang(chat_id),
+            app.send_message(chat_id=chat_id, text="Loading..."),
         )
 
         if not media.file_path:
@@ -428,7 +426,7 @@ class TgCall(PyTgCalls):
 
         if not media.file_path:
             await msg.edit_text(
-                _lang["error_no_file"].format(_get("config").SUPPORT_CHAT)
+                _lang["error_no_file"].format(config.SUPPORT_CHAT)
             )
             return await self.stop(chat_id)
 
@@ -445,7 +443,7 @@ class TgCall(PyTgCalls):
         while the next track is searched/downloaded.
         """
         try:
-            upcoming = _get("queue").get_next(chat_id, check=True)
+            upcoming = queue.get_next(chat_id, check=True)
         except Exception:
             return
 
@@ -456,16 +454,16 @@ class TgCall(PyTgCalls):
         # No manually queued track: resolve autoplay before the current song
         # ends, so StreamEnded can switch immediately.
         try:
-            current = _get("queue").get_current(chat_id)
+            current = queue.get_current(chat_id)
         except Exception:
             current = None
         if current:
             async def maybe_autoplay():
                 try:
-                    if await _get("db").get_autoplay(chat_id):
+                    if await db.get_autoplay(chat_id):
                         self._start_autoplay_prefetch(chat_id, current)
                 except Exception as e:
-                    _get("logger").warning(
+                    logger.warning(
                         f"[_prefetch_next] autoplay check failed for chat {chat_id}: {e!r}"
                     )
             asyncio.create_task(maybe_autoplay())
@@ -486,14 +484,14 @@ class TgCall(PyTgCalls):
         @client.on_update()
         async def update_handler(_, update: types.Update) -> None:
             if isinstance(update, types.UpdatedGroupCallParticipant):
-                if not await _get("db").get_vclogger(update.chat_id):
+                if not await db.get_vclogger(update.chat_id):
                     return
                 try:
-                    user = await _get("app").get_users(update.participant.user_id)
+                    user = await app.get_users(update.participant.user_id)
                 except Exception:
                     return
 
-                _lang = await _get("lang").get_lang(update.chat_id)
+                _lang = await lang.get_lang(update.chat_id)
                 if update.action == types.GroupCallParticipant.Action.JOINED:
                     text = _lang["vclog_joined"].format(user.mention, user.id)
                 elif update.action == types.GroupCallParticipant.Action.LEFT:
@@ -502,7 +500,7 @@ class TgCall(PyTgCalls):
                     return
 
                 try:
-                    sent = await _get("app").send_message(update.chat_id, text)
+                    sent = await app.send_message(update.chat_id, text)
                     asyncio.create_task(self._delete_msg(sent))
                 except Exception:
                     pass
@@ -520,9 +518,9 @@ class TgCall(PyTgCalls):
 
     async def boot(self) -> None:
         PyTgCallsSession.notice_displayed = True
-        for ub in _get("userbot").clients:
+        for ub in userbot.clients:
             client = PyTgCalls(ub, cache_duration=100)
             await client.start()
             self.clients.append(client)
             await self.decorators(client)
-        _get("logger").info("PyTgCalls client(s) started.")
+        logger.info("PyTgCalls client(s) started.")
