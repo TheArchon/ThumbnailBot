@@ -65,13 +65,6 @@ class Config:
         # Language
         self.LANG_CODE = getenv("LANG_CODE", "en")
 
-        # Cookies
-        self.COOKIES_URL = [
-            url
-            for url in getenv("COOKIES_URL", "").split()
-            if url and "batbin.me" in url
-        ]
-
         # Images
         self.DEFAULT_THUMB = getenv(
             "DEFAULT_THUMB",
