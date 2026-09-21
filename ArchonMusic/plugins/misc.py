@@ -61,7 +61,7 @@ async def update_timer(length=10):
                 played = media.time
                 remaining = duration - played
                 pos = min(int((played / duration) * length), length - 1)
-                timer = "—" * pos + "◉" + "—" * (length - pos - 1)
+                timer = "─" * pos + "●" + "─" * (length - pos - 1)
 
                 if remaining <= 30:
                     next = queue.get_next(chat_id, check=True)
@@ -80,7 +80,11 @@ async def update_timer(length=10):
                     remove = True
                 else:
                     if config.THUMB_GEN:
-                        timer = f"{time.strftime('%M:%S', time.gmtime(played))} | {timer} | -{time.strftime('%M:%S', time.gmtime(remaining))}"
+                        timer = (
+                            f"{time.strftime('%M:%S', time.gmtime(played))}  "
+                            f"{timer}  "
+                            f"{time.strftime('%M:%S', time.gmtime(duration))}"
+                        )
                     else:
                         timer = None
                     remove = False
