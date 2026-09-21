@@ -12,7 +12,7 @@ import random
 
 from pyrogram import enums, types
 
-from ArchonMusic import app, config, lang
+from ArchonMusic import app, config, lang, queue
 from ArchonMusic.core.lang import lang_codes
 
 
@@ -20,23 +20,16 @@ class Inline:
     def __init__(self):
         self.ikm = types.InlineKeyboardMarkup
 
-    def ikb(
-        self,
-        text: str,
-        style=None,
-        **kwargs,
-    ) -> types.InlineKeyboardButton:
-        if style is None:
-            style = random.choice([
-                enums.ButtonStyle.DANGER,
-                enums.ButtonStyle.PRIMARY,
-                enums.ButtonStyle.SUCCESS,
-                enums.ButtonStyle.DEFAULT,
-            ])
+    def ikb(self, text: str, **kwargs) -> types.InlineKeyboardButton:
+        styles = [
+            enums.ButtonStyle.DANGER,
+            enums.ButtonStyle.PRIMARY,
+            enums.ButtonStyle.SUCCESS,
+            enums.ButtonStyle.DEFAULT,
+        ]
+        style = kwargs.pop("style", random.choice(styles))
         return types.InlineKeyboardButton(
-            text=text,
-            style=style,
-            **kwargs,
+            text=text, style=style, **kwargs
         )
 
     def cancel_dl(self, text) -> types.InlineKeyboardMarkup:
@@ -53,24 +46,17 @@ class Inline:
         thumb: bool | None = None,
         lang: dict | None = None,
     ) -> types.InlineKeyboardMarkup:
-        """Player keyboard styled like the supplied Veya Music screenshot.
-
-        Normal player layout:
-          [ Replay ] [ Pause ] [ Skip ]
-          [           Close          ]
-
-        The first row is replaced by a green timer/status button when the
-        playback watcher supplies ``timer``/``status``.
-        """
         keyboard = []
 
+        # The timer/status is kept as a full-width row above the controls,
+        # matching the 3 + 1 layout of the reference UI.
         if status:
             keyboard.append(
                 [
                     self.ikb(
                         text=status,
                         callback_data=f"controls status {chat_id}",
-                        style=enums.ButtonStyle.SUCCESS,
+                        style=enums.ButtonStyle.DEFAULT,
                     )
                 ]
             )
@@ -80,76 +66,79 @@ class Inline:
                     self.ikb(
                         text=timer,
                         callback_data=f"controls status {chat_id}",
-                        style=enums.ButtonStyle.SUCCESS,
+                        style=enums.ButtonStyle.DEFAULT,
                     )
                 ]
             )
 
-        if remove:
-            return self.ikm(keyboard)
-
-        # Keep the existing settings/more screen functional.
-        if more:
-            _on = "Enabled ✅"
-            _off = "Disabled ❌"
-            keyboard.append(
-                [
-                    self.ikb(text="Autoplay", callback_data="help autoplay"),
-                    self.ikb(
-                        text=_on if autoplay else _off,
-                        callback_data=f"controls cautoplay {chat_id}",
-                    ),
-                ]
-            )
-            keyboard.append(
-                [
-                    self.ikb(text="Thumbnail", callback_data="help thumb"),
-                    self.ikb(
-                        text=_on if thumb else _off,
-                        callback_data=f"controls cthumb {chat_id}",
-                    ),
-                ]
-            )
-            keyboard.append(
-                [
-                    self.ikb(
-                        text="Back ⬅️",
-                        callback_data=f"controls back {chat_id}",
-                    )
-                ]
-            )
-            return self.ikm(keyboard)
-
-        # Exact player controls from the reference screenshot.
-        # PRIMARY = blue, DANGER = red, SUCCESS = green in Telegram clients.
-        keyboard.append(
-            [
-                self.ikb(
-                    text="⟳  Replay",
-                    callback_data=f"controls replay {chat_id}",
-                    style=enums.ButtonStyle.PRIMARY,
-                ),
-                self.ikb(
-                    text="Ⅱ  Pause",
-                    callback_data=f"controls pause {chat_id}",
-                    style=enums.ButtonStyle.DANGER,
-                ),
-                self.ikb(
-                    text="≫  Skip",
-                    callback_data=f"controls skip {chat_id}",
-                    style=enums.ButtonStyle.PRIMARY,
-                ),
-            ]
-        )
-        keyboard.append(
-            [
-                self.ikb(
-                    text="✕  Close",
-                    callback_data=f"controls close {chat_id}",
-                    style=enums.ButtonStyle.SUCCESS,
+        if not remove:
+            if more:
+                _on = "Enabled ✅"
+                _off = "Disabled ❌"
+                keyboard.append(
+                    [
+                        self.ikb(text="Autoplay", callback_data="help autoplay"),
+                        self.ikb(
+                            text=_on if autoplay else _off,
+                            callback_data=f"controls cautoplay {chat_id}",
+                        ),
+                    ]
                 )
-            ]
-        )
+                keyboard.append(
+                    [
+                        self.ikb(text="Thumbnail", callback_data="help thumb"),
+                        self.ikb(
+                            text=_on if thumb else _off,
+                            callback_data=f"controls cthumb {chat_id}",
+                        ),
+                    ]
+                )
+                keyboard.append(
+                    [
+                        self.ikb(
+                            text="Back ⬅️",
+                            callback_data=f"controls back {chat_id}",
+                        )
+                    ]
+                )
+            else:
+                # Reference layout: three action buttons in one row.
+                keyboard.append(
+                    [
+                        self.ikb(
+                            text="↻ Replay",
+                            callback_data=f"controls replay {chat_id}",
+                            style=enums.ButtonStyle.PRIMARY,
+                        ),
+                        self.ikb(
+                            text="Ⅱ Pause",
+                            callback_data=f"controls pause {chat_id}",
+                            style=enums.ButtonStyle.DANGER,
+                        ),
+                        self.ikb(
+                            text="» Skip",
+                            callback_data=f"controls skip {chat_id}",
+                            style=enums.ButtonStyle.SUCCESS,
+                        ),
+                    ]
+                )
+
+                # Queue count excludes the currently playing track.
+                try:
+                    queue_count = max(0, len(queue.get_queue(chat_id)) - 1)
+                except Exception:
+                    queue_count = 0
+
+                keyboard.append(
+                    [
+                        self.ikb(
+                            text=f"☰ Queue • {queue_count}",
+                            callback_data=f"controls queue {chat_id}",
+                            style=enums.ButtonStyle.DEFAULT,
+                        )
+                    ]
+                )
+
         return self.ikm(keyboard)
 
     def help_markup(
