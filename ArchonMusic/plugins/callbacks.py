@@ -40,6 +40,13 @@ async def _controls(_, query: types.CallbackQuery):
 
     if action == "status":
         return await query.answer()
+
+    if action == "queue":
+        count = max(0, len(queue.get_queue(chat_id)) - 1)
+        return await query.answer(
+            f"☰ Queue • {count} track{'s' if count != 1 else ''}",
+            show_alert=True,
+        )
     
     await query.answer(f"⚡ {query.lang['processing']}", show_alert=True)
 
