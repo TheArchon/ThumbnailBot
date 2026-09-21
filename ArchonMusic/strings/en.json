@@ -80,7 +80,7 @@
     "ping_pong": "<u><b>Pᴏɴɢ!</b></u>\n\n<b>Lᴀᴛᴇɴᴄʏ:</b> <code>{0}Ms</code>\n\n<b>Uᴘᴛɪᴍᴇ:</b> {1}\n<b>Cᴘᴜ:</b> <code>{2}%</code>\n<b>Rᴀᴍ:</b> <code>{3}%</code>\n<b>Dɪsᴋ:</b> <code>{4}%</code>\n<b>Pʏᴛɢᴄᴀʟʟs Lᴀᴛᴇɴᴄʏ:</b> <code>{5}Ms</code>",
     "play_admin": "<u><b>Aᴅᴍɪɴ Oɴʟʏ Pʟᴀʏ</b></u>\n\nOɴʟʏ Aᴅᴍɪɴs Aʀᴇ Aʟʟᴏᴡᴇᴅ Tᴏ Pʟᴀʏ Iɴ Tʜɪs Cʜᴀᴛ.",
     "play_banned": "<u><b>{0} Assɪsᴛᴀɴᴛ Is Bᴀɴɴᴇᴅ Yᴏᴜʀ Cʜᴀᴛ</b></u>\n\n<b>Iᴅ:</b> <code>{1}</code>\n<b>Nᴀᴍᴇ:</b> {2}\n<b>Usᴇʀɴᴀᴍᴇ:</b> {3}",
-    "play_media": "<b>➜ Sᴛᴀʀᴛᴇᴅ Sᴛʀᴇᴀᴍɪɴɢ |</b>\n\n<b>▸ Tɪᴛʟᴇ :</b> <a href=\"{0}\">{1}</a>\n<b>▸ Dᴜʀᴀᴛɪᴏɴ :</b> {2} MINUTES\n<b>▸ Rᴇǫᴜᴇsᴛᴇᴅ Bʏ :</b> {3}",
+    "play_media": "<b>🎧 Mᴜsɪᴄ Is Pʟᴀʏɪɴɢ</b>\n\n<b>🎵 Nᴏᴡ Pʟᴀʏɪɴɢ :</b> <a href=\"{0}\">{1}</a>\n\n<b>⏱ Tʀᴀᴄᴋ Dᴜʀᴀᴛɪᴏɴ :</b> {2} Mɪɴ\n<b>👤 Rᴇǫᴜᴇsᴛᴇᴅ Bʏ :</b> {3}\n\n<b>🎶 Yᴏᴜʀ Tʀᴀᴄᴋ Is Nᴏᴡ Pʟᴀʏɪɴɢ</b>\n<b>📡 Sɪᴛ Bᴀᴄᴋ, Rᴇʟᴀx & Eɴᴊᴏʏ Tʜᴇ Mᴜsɪᴄ</b>",
     "play_log": "<u>{0} Pʟᴀʏ Lᴏɢ</u>\n\n<b>Cʜᴀᴛ:</b> <code>{1}</code> | {2}\n<b>Usᴇʀ:</b> <code>{3}</code> | {4}\n<b>Mᴇssᴀɢᴇ Lɪɴᴋ:</b> {5}\n\n<b>Tɪᴛʟᴇ:</b> {6}\n<b>Dᴜʀᴀᴛɪᴏɴ:</b> {7} Mɪɴ",
     "play_queued": "<u><b><emoji id=\"5355051922862653659\">📢</emoji> Aᴅᴅᴇᴅ Tᴏ Qᴜᴇᴜᴇ: {0}</b></u>\n\n<b><emoji id=\"5409119256107297715\">📢</emoji> Tɪᴛʟᴇ:</b> <a href=\"{1}\">{2}</a>\n<b><emoji id=\"5408910404732595664\">📢</emoji> Dᴜʀᴀᴛɪᴏɴ:</b> {3} Mɪɴ\n<b><emoji id=\"5409132617750555920\">📢</emoji> Pʟᴀʏᴇᴅ Bʏ:</b> {4}",
     "play_usage": "<b>Usᴀɢᴇ:</b>\n\n<code>/play Aᴛᴛᴇɴᴛɪᴏɴ</code>",
