@@ -10,7 +10,7 @@ from pytgcalls import PyTgCalls, exceptions, types
 from pytgcalls.pytgcalls_session import PyTgCallsSession
 
 from ArchonMusic import (app, config, db, lang, logger,
-                   queue, thumb, userbot, yt)
+                   queue, thumb, userbot, yt, rich)
 from ArchonMusic.helpers import Media, Track, buttons
 
 
@@ -261,6 +261,38 @@ class TgCall(PyTgCalls):
             title = title.split("#")[0].strip()
             if len(title) > 25:
                 title = title[:25].rstrip() + "..."
+
+            # Bot API 10.3 Rich Messages allow the photo, text and controls
+            # to live inside ONE Telegram message/card. This replaces the
+            # older InlineKeyboardMarkup, whose buttons are rendered below
+            # the message as a separate keyboard area.
+            queue_count = max(0, len(queue.get_queue(chat_id)) - 1)
+            try:
+                rich_id = await rich.send_now_playing(
+                    chat_id=chat_id,
+                    title=title,
+                    duration=media.duration,
+                    requested_by=media.user,
+                    thumb_path=_thumb,
+                    bot_name=config.BOT_NAME,
+                    queue_count=queue_count,
+                )
+                media.message_id = rich_id
+
+                # The loading/search message has served its purpose. Delete it
+                # so only the final Rich Message player remains in the chat.
+                try:
+                    if message.id != rich_id:
+                        await message.delete()
+                except Exception:
+                    pass
+                return
+            except Exception as rich_error:
+                # Keep a safe legacy fallback for clients/accounts where the
+                # Rich Message endpoint is temporarily unavailable.
+                logger.warning(
+                    f"[RichMessage] falling back to legacy player: {rich_error!r}"
+                )
 
             text = _lang["play_media"].format(
                 media.url,
