@@ -45,9 +45,11 @@ from ArchonMusic.core.lang import Language
 lang = Language()
 
 from ArchonMusic.core.telegram import Telegram
+from ArchonMusic.core.rich import RichMessageAPI
 from ArchonMusic.core.youtube import YouTube
 tg = Telegram()
 yt = YouTube()
+rich = RichMessageAPI(config.BOT_TOKEN)
 
 from ArchonMusic.helpers import Queue, Thumbnail
 queue = Queue()
