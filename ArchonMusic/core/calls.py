@@ -5,13 +5,13 @@ from ntgcalls import (ConnectionNotFound, TelegramServerError,
                       RTMPStreamingUnsupported, ConnectionError)
 from pyrogram.errors import (ChatSendMediaForbidden, ChatSendPhotosForbidden,
                              MessageIdInvalid)
-from pyrogram.types import InputMediaPhoto, Message
+from pyrogram.types import Message
 from pytgcalls import PyTgCalls, exceptions, types
 from pytgcalls.pytgcalls_session import PyTgCallsSession
 
 from ArchonMusic import (app, config, db, lang, logger,
                    queue, thumb, userbot, yt, rich)
-from ArchonMusic.helpers import Media, Track, buttons
+from ArchonMusic.helpers import Media, Track
 
 
 async def _noop():
@@ -279,8 +279,8 @@ class TgCall(PyTgCalls):
                 )
                 media.message_id = rich_id
 
-                # The loading/search message has served its purpose. Delete it
-                # so only the final Rich Message player remains in the chat.
+                # Delete the temporary/loading message. The Rich Message is
+                # now the only player message and owns its embedded controls.
                 try:
                     if message.id != rich_id:
                         await message.delete()
@@ -288,213 +288,14 @@ class TgCall(PyTgCalls):
                     pass
                 return
             except Exception as rich_error:
-                # Keep a safe legacy fallback for clients/accounts where the
-                # Rich Message endpoint is temporarily unavailable.
-                logger.warning(
-                    f"[RichMessage] falling back to legacy player: {rich_error!r}"
+                # Do not fall back to the old InlineKeyboard player: that
+                # creates the duplicate buttons underneath the Rich Message.
+                logger.exception(
+                    f"[RichMessage] failed to render player for chat {chat_id}: {rich_error!r}"
                 )
+                return
 
-            text = _lang["play_media"].format(
-                media.url,
-                title,
-                media.duration,
-                media.user,
-            )
-            keyboard = buttons.controls(chat_id)
-            try:
-                if _thumb:
-                    await message.edit_media(
-                        media=InputMediaPhoto(
-                            media=_thumb,
-                            caption=text,
-                        ),
-                        reply_markup=keyboard,
-                    )
-                else:
-                    await message.edit_text(text, reply_markup=keyboard)
-            except (ChatSendMediaForbidden, ChatSendPhotosForbidden, MessageIdInvalid):
-                if _thumb:
-                    sent = await app.send_photo(
-                        chat_id=chat_id,
-                        photo=_thumb,
-                        caption=text,
-                        reply_markup=keyboard,
-                    )
-                else:
-                    sent = await app.send_message(
-                        chat_id=chat_id,
-                        text=text,
-                        reply_markup=keyboard,
-                    )
-                media.message_id = sent.id
         except Exception as e:
-            logger.warning(f"[_send_now_playing] failed for chat {chat_id}: {e!r}")
-
-
-    async def replay(self, chat_id: int) -> None:
-        if not await db.get_call(chat_id):
-            return
-
-        media = queue.get_current(chat_id)
-        _lang = await lang.get_lang(chat_id)
-        msg = await app.send_message(chat_id=chat_id, text=_lang["play_again"])
-        media.message_id = msg.id
-        await self.play_media(chat_id, msg, media)
-
-
-    async def _autoplay_next(self, chat_id: int, finished) -> "Track | None":
-        video_id = getattr(finished, "id", None)
-        if not video_id:
-            return None
-
-        history = self.autoplay_history.setdefault(chat_id, set())
-        history.add(video_id)
-
-        # YouTube exposes get_related() in this repo; autoplay_track() does not exist.
-        # Use the existing related/mix + search fallback and keep the played-history.
-        track = await yt.get_related(finished, played=list(history))
-        if not track:
-            return None
-
-        history.add(track.id)
-        # Mark system-generated tracks so the UI/avatar code does not try to
-        # resolve a real requesting user.
-        if not getattr(track, "user", None):
-            track.user = "Autoplay"
-        queue.add(chat_id, track)
-        return track
-
-    async def _prepare_track(self, track) -> None:
-        """Resolve/download the next track before it is needed."""
-        if not track or track.file_path:
-            return
-        try:
-            # The configured download API returns a complete local media file.
-            # Downloading it in the background is much faster at song-boundary
-            # time than starting a fresh download after StreamEnded.
-            track.file_path = await yt.download(track.id, video=track.video)
-            if not track.file_path:
-                logger.warning(
-                    f"[_prepare_track] media download returned no file for {track.id}"
-                )
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.warning(f"[_prepare_track] failed for {getattr(track, 'id', '?')}: {e!r}")
-
-    async def _prepare_autoplay(self, chat_id: int, finished) -> None:
-        """Find and download an autoplay track while the current track plays."""
-        try:
-            track = await self._autoplay_next(chat_id, finished)
-            if track:
-                await self._prepare_track(track)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.warning(f"[_prepare_autoplay] failed for chat {chat_id}: {e!r}")
-        finally:
-            self._autoplay_tasks.pop(chat_id, None)
-
-    def _start_autoplay_prefetch(self, chat_id: int, finished) -> None:
-        if not finished:
-            return
-        old = self._autoplay_tasks.get(chat_id)
-        if old and not old.done():
-            return
-        self._autoplay_tasks[chat_id] = asyncio.create_task(
-            self._prepare_autoplay(chat_id, finished)
-        )
-
-    async def play_next(self, chat_id: int) -> None:
-        if loop := await db.get_loop(chat_id):
-            await db.set_loop(chat_id, loop - 1)
-            return await self.replay(chat_id)
-
-        finished = queue.get_current(chat_id)
-        media = queue.get_next(chat_id)
-
-        # If a normal queued track exists, its file is normally already being
-        # prepared by _prefetch_next(). If the queue is empty, wait for the
-        # autoplay prefetch that was started during the previous song.
-        if not media and finished and await db.get_autoplay(chat_id):
-            task = self._autoplay_tasks.get(chat_id)
-            if task and not task.done():
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    pass
-            media = queue.get_current(chat_id)
-
-            # If prefetch could not produce a track, make one synchronous
-            # attempt so autoplay does not silently stop.
-            if not media:
-                media = await self._autoplay_next(chat_id, finished)
-                if media:
-                    await self._prepare_track(media)
-
-        if not media:
-            return await self.stop(chat_id)
-
-        try:
-            if media.message_id:
-                await app.delete_messages(
-                    chat_id=chat_id,
-                    message_ids=media.message_id,
-                    revoke=True,
-                )
-                media.message_id = 0
-        except Exception:
-            pass
-
-        _lang, msg = await asyncio.gather(
-            lang.get_lang(chat_id),
-            app.send_message(chat_id=chat_id, text="Loading..."),
-        )
-
-        if not media.file_path:
-            await self._prepare_track(media)
-
-        if not media.file_path:
-            await msg.edit_text(
-                _lang["error_no_file"].format(config.SUPPORT_CHAT)
-            )
-            return await self.stop(chat_id)
-
-        await msg.edit_text(_lang["play_next"])
-
-        media.message_id = msg.id
-        await self.play_media(chat_id, msg, media)
-        self._prefetch_next(chat_id)
-
-    def _prefetch_next(self, chat_id: int) -> None:
-        """Prepare the next queued item, or start autoplay resolution.
-
-        This is deliberately fire-and-forget: the current track keeps playing
-        while the next track is searched/downloaded.
-        """
-        try:
-            upcoming = queue.get_next(chat_id, check=True)
-        except Exception:
-            return
-
-        if upcoming:
-            asyncio.create_task(self._prepare_track(upcoming))
-            return
-
-        # No manually queued track: resolve autoplay before the current song
-        # ends, so StreamEnded can switch immediately.
-        try:
-            current = queue.get_current(chat_id)
-        except Exception:
-            current = None
-        if current:
-            async def maybe_autoplay():
-                try:
-                    if await db.get_autoplay(chat_id):
-                        self._start_autoplay_prefetch(chat_id, current)
-                except Exception as e:
                     logger.warning(
                         f"[_prefetch_next] autoplay check failed for chat {chat_id}: {e!r}"
                     )
