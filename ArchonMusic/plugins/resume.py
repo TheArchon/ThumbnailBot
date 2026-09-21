@@ -1,7 +1,7 @@
 from pyrogram import filters, types
 
 from ArchonMusic import ArchonMusic, app, db, lang
-from ArchonMusic.helpers import buttons, can_manage_vc
+from ArchonMusic.helpers import can_manage_vc
 
 
 @app.on_message(filters.command(["resume"]) & filters.group & ~app.bl_users)
@@ -14,8 +14,5 @@ async def _resume(_, m: types.Message):
     if await db.playing(m.chat.id):
         return await m.reply_text(m.lang["play_not_paused"])
 
-    await anon.resume(m.chat.id)
-    await m.reply_text(
-        text=m.lang["play_resumed"].format(m.from_user.mention),
-        reply_markup=buttons.controls(m.chat.id),
-    )
+    await ArchonMusic.resume(m.chat.id)
+    await m.reply_text(text=m.lang["play_resumed"].format(m.from_user.mention))

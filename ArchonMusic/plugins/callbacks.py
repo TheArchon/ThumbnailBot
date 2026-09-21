@@ -32,6 +32,14 @@ async def _controls(_, query: types.CallbackQuery):
         and query.message.id == current_media.message_id
     )
 
+    # Rich player controls are embedded inside the card. Remove any legacy
+    # InlineKeyboardMarkup that may still be attached to the same message.
+    if is_rich_player:
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
     if action != "autoplay":
         if user_id not in app.sudoers and not await db.is_auth(chat_id, user_id):
             admins = await db.get_admins(chat_id)

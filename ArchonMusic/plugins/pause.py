@@ -1,7 +1,7 @@
 from pyrogram import filters, types
 
 from ArchonMusic import ArchonMusic, app, db, lang
-from ArchonMusic.helpers import buttons, can_manage_vc
+from ArchonMusic.helpers import can_manage_vc
 
 
 @app.on_message(filters.command(["pause"]) & filters.group & ~app.bl_users)
@@ -15,7 +15,4 @@ async def _pause(_, m: types.Message):
         return await m.reply_text(m.lang["play_already_paused"])
 
     await ArchonMusic.pause(m.chat.id)
-    await m.reply_text(
-        text=m.lang["play_paused"].format(m.from_user.mention),
-        reply_markup=buttons.controls(m.chat.id),
-    )
+    await m.reply_text(text=m.lang["play_paused"].format(m.from_user.mention))
