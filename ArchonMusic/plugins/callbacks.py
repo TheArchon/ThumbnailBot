@@ -22,6 +22,16 @@ async def _controls(_, query: types.CallbackQuery):
     user = query.from_user.mention
     user_id = query.from_user.id
 
+    # A Rich player message must never receive an InlineKeyboardMarkup.
+    # That would render a second button row underneath the white Rich card.
+    current_media = queue.get_current(chat_id)
+    is_rich_player = bool(
+        current_media
+        and current_media.message_id
+        and query.message
+        and query.message.id == current_media.message_id
+    )
+
     if action != "autoplay":
         if user_id not in app.sudoers and not await db.is_auth(chat_id, user_id):
             admins = await db.get_admins(chat_id)
@@ -115,6 +125,8 @@ async def _controls(_, query: types.CallbackQuery):
         reply = f'<emoji id="6271674836628541366">🛑</emoji> {query.lang["play_stopped"].format(user)}'
 
     elif action in ["more", "cthumb", "back"]:
+        if is_rich_player:
+            return await query.answer("Use the controls on the player card.", show_alert=False)
         if action == "cthumb":
             thumb = not await db.get_thumb_mode(chat_id)
             await db.set_thumb_mode(chat_id, thumb)
@@ -139,6 +151,8 @@ async def _controls(_, query: types.CallbackQuery):
             return
 
     elif action == "autoplay":
+        if is_rich_player:
+            return await query.answer("Autoplay is controlled from the player menu.", show_alert=False)
         astatus = not await db.get_autoplay(chat_id)
         await db.set_autoplay(chat_id, astatus)
         keyboard = buttons.controls(chat_id, autoplay=astatus)
@@ -148,10 +162,13 @@ async def _controls(_, query: types.CallbackQuery):
             return
 
     # Rich Messages contain their controls inside the same message card.
-    # Do not try to replace that message with a legacy InlineKeyboardMarkup;
-    # the rich card is intentionally kept intact. Skip/replay already delete
-    # the old card and create a fresh one through play_media().
-    if getattr(query.message, "rich_message", None) is not None:
+    # Never attach a legacy InlineKeyboardMarkup to this message.
+    if is_rich_player:
+        if action == "stop":
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
         return
 
     try:

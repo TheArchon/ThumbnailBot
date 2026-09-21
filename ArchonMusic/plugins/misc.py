@@ -4,7 +4,6 @@ import asyncio
 from pyrogram import enums, errors, filters, types
 
 from ArchonMusic import ArchonMusic, app, config, db, lang, queue, tasks, userbot, yt
-from ArchonMusic.helpers import buttons
 
 
 @app.on_message(filters.video_chat_started, group=19)
@@ -91,14 +90,8 @@ async def update_timer(length=10):
 
                 if not timer and not remove:
                     continue
-
-                await app.edit_message_reply_markup(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    reply_markup=buttons.controls(
-                        chat_id=chat_id, timer=timer, remove=remove
-                    ),
-                )
+                # Rich player progress is rendered inside the Rich Message.
+                # Do not attach the legacy InlineKeyboardMarkup here.
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -115,15 +108,10 @@ async def vc_watcher(sleep=15):
             if len(participants) < 2 and media.time > 30:
                 _lang = await lang.get_lang(chat_id)
                 try:
-                    sent = await app.edit_message_reply_markup(
-                        chat_id=chat_id,
-                        message_id=media.message_id,
-                        reply_markup=buttons.controls(
-                            chat_id=chat_id, status=_lang["stopped"], remove=True
-                        ),
-                    )
+                    # The current player is a Rich Message. Do not add a
+                    # legacy keyboard when the assistant leaves.
                     await ArchonMusic.stop(chat_id)
-                    await sent.reply_text(_lang["auto_left"])
+                    await app.send_message(chat_id, _lang["auto_left"])
                 except errors.MessageIdInvalid:
                     pass
 
