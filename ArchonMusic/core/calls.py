@@ -296,10 +296,9 @@ class TgCall(PyTgCalls):
                 return
 
         except Exception as e:
-                    logger.warning(
-                        f"[_prefetch_next] autoplay check failed for chat {chat_id}: {e!r}"
-                    )
-            asyncio.create_task(maybe_autoplay())
+            logger.warning(
+                f"[_send_now_playing] failed for chat {chat_id}: {e!r}"
+            )
 
     async def ping(self) -> float:
         pings = [client.ping for client in self.clients]
