@@ -20,15 +20,23 @@ class Inline:
     def __init__(self):
         self.ikm = types.InlineKeyboardMarkup
 
-    def ikb(self, text: str, **kwargs) -> types.InlineKeyboardButton:
-        styles = [
-            enums.ButtonStyle.DANGER,
-            enums.ButtonStyle.PRIMARY,
-            enums.ButtonStyle.SUCCESS,
-            enums.ButtonStyle.DEFAULT,
-        ]
+    def ikb(
+        self,
+        text: str,
+        style=None,
+        **kwargs,
+    ) -> types.InlineKeyboardButton:
+        if style is None:
+            style = random.choice([
+                enums.ButtonStyle.DANGER,
+                enums.ButtonStyle.PRIMARY,
+                enums.ButtonStyle.SUCCESS,
+                enums.ButtonStyle.DEFAULT,
+            ])
         return types.InlineKeyboardButton(
-            text=text, style=random.choice(styles), **kwargs
+            text=text,
+            style=style,
+            **kwargs,
         )
 
     def cancel_dl(self, text) -> types.InlineKeyboardMarkup:
@@ -45,69 +53,103 @@ class Inline:
         thumb: bool | None = None,
         lang: dict | None = None,
     ) -> types.InlineKeyboardMarkup:
+        """Player keyboard styled like the supplied Veya Music screenshot.
+
+        Normal player layout:
+          [ Replay ] [ Pause ] [ Skip ]
+          [           Close          ]
+
+        The first row is replaced by a green timer/status button when the
+        playback watcher supplies ``timer``/``status``.
+        """
         keyboard = []
+
         if status:
             keyboard.append(
-                [self.ikb(text=status, callback_data=f"controls status {chat_id}")]
+                [
+                    self.ikb(
+                        text=status,
+                        callback_data=f"controls status {chat_id}",
+                        style=enums.ButtonStyle.SUCCESS,
+                    )
+                ]
             )
         elif timer:
             keyboard.append(
-                [self.ikb(text=timer, callback_data=f"controls status {chat_id}")]
+                [
+                    self.ikb(
+                        text=timer,
+                        callback_data=f"controls status {chat_id}",
+                        style=enums.ButtonStyle.SUCCESS,
+                    )
+                ]
             )
 
-        if not remove:
-            if more:
-                _on = "Enabled ✅"
-                _off = "Disabled ❌"
-                keyboard.append(
-                    [
-                        self.ikb(text="Autoplay", callback_data="help autoplay"),
-                        self.ikb(
-                            text=_on if autoplay else _off,
-                            callback_data=f"controls cautoplay {chat_id}",
-                        ),
-                    ]
+        if remove:
+            return self.ikm(keyboard)
+
+        # Keep the existing settings/more screen functional.
+        if more:
+            _on = "Enabled ✅"
+            _off = "Disabled ❌"
+            keyboard.append(
+                [
+                    self.ikb(text="Autoplay", callback_data="help autoplay"),
+                    self.ikb(
+                        text=_on if autoplay else _off,
+                        callback_data=f"controls cautoplay {chat_id}",
+                    ),
+                ]
+            )
+            keyboard.append(
+                [
+                    self.ikb(text="Thumbnail", callback_data="help thumb"),
+                    self.ikb(
+                        text=_on if thumb else _off,
+                        callback_data=f"controls cthumb {chat_id}",
+                    ),
+                ]
+            )
+            keyboard.append(
+                [
+                    self.ikb(
+                        text="Back ⬅️",
+                        callback_data=f"controls back {chat_id}",
+                    )
+                ]
+            )
+            return self.ikm(keyboard)
+
+        # Exact player controls from the reference screenshot.
+        # PRIMARY = blue, DANGER = red, SUCCESS = green in Telegram clients.
+        keyboard.append(
+            [
+                self.ikb(
+                    text="⟳  Replay",
+                    callback_data=f"controls replay {chat_id}",
+                    style=enums.ButtonStyle.PRIMARY,
+                ),
+                self.ikb(
+                    text="Ⅱ  Pause",
+                    callback_data=f"controls pause {chat_id}",
+                    style=enums.ButtonStyle.DANGER,
+                ),
+                self.ikb(
+                    text="≫  Skip",
+                    callback_data=f"controls skip {chat_id}",
+                    style=enums.ButtonStyle.PRIMARY,
+                ),
+            ]
+        )
+        keyboard.append(
+            [
+                self.ikb(
+                    text="✕  Close",
+                    callback_data=f"controls close {chat_id}",
+                    style=enums.ButtonStyle.SUCCESS,
                 )
-                keyboard.append(
-                    [
-                        self.ikb(text="Thumbnail", callback_data="help thumb"),
-                        self.ikb(
-                            text=_on if thumb else _off,
-                            callback_data=f"controls cthumb {chat_id}",
-                        ),
-                    ]
-                )
-                keyboard.append(
-                    [self.ikb(text="Back ⬅️", callback_data=f"controls back {chat_id}")]
-                )
-            else:
-                keyboard.append(
-                    [
-                        self.ikb(text="▷", callback_data=f"controls resume {chat_id}"),
-                        self.ikb(text="II", callback_data=f"controls pause {chat_id}"),
-                        self.ikb(text="⥁", callback_data=f"controls replay {chat_id}"),
-                        self.ikb(text="‣‣I", callback_data=f"controls skip {chat_id}"),
-                        self.ikb(text="▢", callback_data=f"controls stop {chat_id}"),
-                    ]
-                )
-                keyboard.append(
-                    [
-                        self.ikb(
-                            text="-20s", callback_data=f"controls seek {chat_id} -20"
-                        ),
-                        self.ikb(text="More", callback_data=f"controls more {chat_id}"),
-                        self.ikb(
-                            text="+20s", callback_data=f"controls seek {chat_id} 20"
-                        ),
-                    ]
-                )
-                keyboard.append(
-                    [
-                        self.ikb(
-                            text="Close ✘", callback_data=f"controls close {chat_id}"
-                        ),
-                    ]
-                )
+            ]
+        )
         return self.ikm(keyboard)
 
     def help_markup(

@@ -65,9 +65,17 @@ class Thumbnail:
         song: Track,
         size=(1280, 720),
     ):
+        """Create the now-playing artwork in the style of the reference image.
+
+        The source thumbnail fills the whole 16:9 canvas, is softly blurred and
+        darkened, and the channel/title/progress information is drawn directly
+        over the lower part of the artwork. This keeps the generated photo
+        looking like a single polished music-player card instead of a small
+        thumbnail sitting inside another background.
+        """
         source = Image.open(temp).convert("RGB")
 
-        # Full image background
+        # Fill the complete 1280x720 canvas.
         background = ImageOps.fit(
             source,
             size,
@@ -75,105 +83,74 @@ class Thumbnail:
             centering=(0.5, 0.5),
         )
 
-        # Blur background
-        background = background.filter(
-            ImageFilter.GaussianBlur(
-                radius=max(8, int(min(size) * 0.025))
-            )
-        )
-
-        background = ImageEnhance.Brightness(
-            background
-        ).enhance(0.40)
-
-        # Keep complete thumbnail without cropping
-        foreground = ImageOps.contain(
-            source,
-            self.rect,
-            method=Image.Resampling.LANCZOS,
-        )
-
-        # Center thumbnail
-        x = (size[0] - foreground.width) // 2
-        y = (size[1] - foreground.height) // 2
-
-        # Rounded mask
-        mask = Image.new(
-            "L",
-            foreground.size,
-            0,
-        )
-
-        ImageDraw.Draw(mask).rounded_rectangle(
-            (
-                0,
-                0,
-                foreground.width,
-                foreground.height,
-            ),
-            radius=15,
-            fill=255,
-        )
-
-        foreground = foreground.convert("RGBA")
-        foreground.putalpha(mask)
-
+        # Soft blur + darkening, matching the supplied player screenshot.
+        background = background.filter(ImageFilter.GaussianBlur(radius=2.2))
+        background = ImageEnhance.Brightness(background).enhance(0.68)
+        background = ImageEnhance.Contrast(background).enhance(0.92)
         background = background.convert("RGBA")
-        background.paste(
-            foreground,
-            (x, y),
-            foreground,
-        )
+
+        # Dark transparent lower panel so white metadata remains readable.
+        overlay = Image.new("RGBA", size, (0, 0, 0, 0))
+        od = ImageDraw.Draw(overlay)
+        od.rectangle((0, 505, size[0], size[1]), fill=(0, 0, 0, 92))
+        background = Image.alpha_composite(background, overlay)
 
         draw = ImageDraw.Draw(background)
 
-        # Channel + views
+        # Small bot/channel watermark in the top-right corner.
+        try:
+            watermark = (config.BOT_NAME or "MUSIC").upper()[:24]
+        except Exception:
+            watermark = "MUSIC"
+        wm_box = draw.textbbox((0, 0), watermark, font=self.font2)
         draw.text(
-            xy=(50, 560),
-            text=(
-                f"{(song.channel_name or 'Unknown')[:25]}"
-                f" | {song.view_count or 0}"
-            ),
+            (size[0] - (wm_box[2] - wm_box[0]) - 45, 30),
+            watermark,
             font=self.font2,
-            fill=self.fill,
+            fill=(255, 255, 255, 235),
         )
 
-        # Song title
+        # Channel + views.
+        channel = (song.channel_name or "Unknown")[:28]
+        views = str(song.view_count or 0)
         draw.text(
-            (50, 600),
-            (song.title or "Unknown")[:50],
-            font=self.font1,
-            fill=self.fill,
+            (50, 555),
+            f"{channel} | {views} views",
+            font=self.font2,
+            fill=(255, 255, 255, 245),
         )
 
-        # Progress
+        # Song title.
+        title = (song.title or "Unknown").replace("\n", " ").strip()[:58]
         draw.text(
-            (40, 650),
-            "0:01",
+            (50, 598),
+            title,
             font=self.font1,
-            fill=self.fill,
+            fill=(255, 255, 255, 255),
         )
 
-        draw.line(
-            [(140, 670), (1160, 670)],
-            fill=self.fill,
-            width=5,
-            joint="curve",
-        )
+        # Progress line + knob, visually matching the reference.
+        left = 48
+        right = size[0] - 48
+        line_y = 654
+        draw.line((left, line_y, right, line_y), fill=(255, 255, 255, 235), width=5)
+        # Start playback at ~88% only as a visual mock of the reference; the
+        # live progress shown by the Telegram buttons is updated separately.
+        knob_x = int(left + (right - left) * 0.88)
+        draw.ellipse((knob_x - 11, line_y - 11, knob_x + 11, line_y + 11), fill=(255, 255, 255, 255))
 
-        # Duration
+        elapsed = "0:01"
+        duration = song.duration or "00:00"
+        draw.text((40, 672), elapsed, font=self.font2, fill=(255, 255, 255, 245))
+        dur_box = draw.textbbox((0, 0), duration, font=self.font2)
         draw.text(
-            (1185, 650),
-            song.duration or "00:00",
-            font=self.font1,
-            fill=self.fill,
+            (size[0] - (dur_box[2] - dur_box[0]) - 40, 672),
+            duration,
+            font=self.font2,
+            fill=(255, 255, 255, 245),
         )
 
-        background.convert("RGB").save(
-            output,
-            quality=95,
-        )
-
+        background.convert("RGB").save(output, quality=95)
         return output
 
     async def generate(
