@@ -147,6 +147,13 @@ async def _controls(_, query: types.CallbackQuery):
         except Exception:
             return
 
+    # Rich Messages contain their controls inside the same message card.
+    # Do not try to replace that message with a legacy InlineKeyboardMarkup;
+    # the rich card is intentionally kept intact. Skip/replay already delete
+    # the old card and create a fresh one through play_media().
+    if getattr(query.message, "rich_message", None) is not None:
+        return
+
     try:
         if action in ["skip", "replay", "stop"]:
             await query.message.reply_text(reply, quote=False)
