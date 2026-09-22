@@ -80,13 +80,12 @@ class RichMessageAPI:
                 {"type": "paragraph", "text": f"<b>👤  Rᴇǫᴜᴇsᴛᴇᴅ Bʏ :</b> {requested_by}"},
                 {"type": "paragraph", "text": "<b> 🎶 Yᴏᴜʀ Tʀᴀᴄᴋ ɪs Nᴏᴡ Pʟᴀʏɪɴɢ</b>"},
                 {"type": "paragraph", "text": "<b>🔊 Sɪᴛ Bᴀᴄᴋ, Rᴇʟᴀx & Eɴᴊᴏʏ Tʜᴇ Mᴜsɪᴄ</b>"},
-                {"type": "paragraph", "text": f"00:01   ●──────────────   {duration}"},
                 {
                     "type": "buttons",
                     "buttons": [
                         {
                             "text": f"00:01  ━━━━━━━━━●━━━━━━  {duration}",
-                            "style": "primary",
+                            "style": "success",
                             "callback_data": f"controls status {chat_id}",
                         }
                     ],
@@ -107,7 +106,7 @@ class RichMessageAPI:
                         },
                         {
                             "text": "» Skip",
-                            "style": "success",
+                            "style": "primary",
                             "callback_data": f"controls skip {chat_id}",
                         },
                     ],
@@ -118,7 +117,7 @@ class RichMessageAPI:
                     "buttons": [
                         {
                             "text": f"☰ Queue • {max(0, queue_count)}",
-                            "style": "danger",
+                            "style": "success",
                             "callback_data": f"controls queue {chat_id}",
                         }
                     ],
