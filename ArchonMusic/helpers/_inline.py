@@ -134,7 +134,7 @@ class Inline:
                         self.ikb(
                             text=f"☰ Queue • {queue_count}",
                             callback_data=f"controls queue {chat_id}",
-                            style=enums.ButtonStyle.DEFAULT,
+                            style=enums.ButtonStyle.DANGER,
                         )
                     ]
                 )
