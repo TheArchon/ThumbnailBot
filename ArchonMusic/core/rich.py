@@ -74,13 +74,12 @@ class RichMessageAPI:
 
         blocks.extend(
             [
-                {"type": "paragraph", "text": f"🎼  {bot_name}  🎵  |  [ NO ADS ]™"},
-                {"type": "paragraph", "text": "🎧  MUSIC IS PLAYING"},
-                {"type": "paragraph", "text": f"🎵  Now Playing : {title}"},
-                {"type": "paragraph", "text": f"⏱️  Track Duration : {duration}"},
-                {"type": "paragraph", "text": f"👤  Requested By : {requested_by}"},
-                {"type": "paragraph", "text": "🎶  Your Track Is Now Playing"},
-                {"type": "paragraph", "text": "🔊  Sit Back, Relax & Enjoy The Music"},
+                {"type": "paragraph", "text": "<b>🎧  Mᴜsɪᴄ Iѕ Pʟᴀʏɪɴɢ</b>"},
+                {"type": "paragraph", "text": f"<b>🎵  Nᴏᴡ Pʟᴀʏɪɴɢ :</b> {title}"},
+                {"type": "paragraph", "text": f"<b>⏱️  Tʀᴀᴄᴋ Dᴜʀᴀᴛɪᴏɴ :</b> {duration}"} ᴍɪɴ,
+                {"type": "paragraph", "text": f"<b>👤  Rᴇǫᴜᴇsᴛᴇᴅ Bʏ :</b> {requested_by}"},
+                {"type": "paragraph", "text": "<b> 🎶 Yᴏᴜʀ Tʀᴀᴄᴋ ɪs Nᴏᴡ Pʟᴀʏɪɴɢ</b>"},
+                {"type": "paragraph", "text": "<b>🔊 Sɪᴛ Bᴀᴄᴋ, Rᴇʟᴀx & Eɴᴊᴏʏ Tʜᴇ Mᴜsɪᴄ</b>"},
                 {"type": "paragraph", "text": f"00:01   ●──────────────   {duration}"},
                 {
                     "type": "buttons",
