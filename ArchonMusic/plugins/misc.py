@@ -48,7 +48,8 @@ async def track_time():
 
 async def update_timer(length=10):
     while True:
-        await asyncio.sleep(7)
+        # Refresh the Rich Message progress every 3 seconds.
+        await asyncio.sleep(3)
         for chat_id in list(db.active_calls):
             if not await db.playing(chat_id):
                 continue
@@ -58,9 +59,7 @@ async def update_timer(length=10):
                 if not duration or not message_id or not media.time:
                     continue
                 played = media.time
-                remaining = duration - played
-                pos = min(int((played / duration) * length), length - 1)
-                timer = "─" * pos + "●" + "─" * (length - pos - 1)
+                remaining = max(0, duration - played)
 
                 if remaining <= 30:
                     next = queue.get_next(chat_id, check=True)
@@ -78,20 +77,22 @@ async def update_timer(length=10):
                 if remaining < 10:
                     remove = True
                 else:
-                    if config.THUMB_GEN:
-                        timer = (
-                            f"{time.strftime('%M:%S', time.gmtime(played))}  "
-                            f"{timer}  "
-                            f"{time.strftime('%M:%S', time.gmtime(duration))}"
-                        )
-                    else:
-                        timer = None
                     remove = False
 
-                if not timer and not remove:
-                    continue
-                # Rich player progress is rendered inside the Rich Message.
-                # Do not attach the legacy InlineKeyboardMarkup here.
+                # Update the actual Rich Message button so the blue progress
+                # bar moves with media.time.
+                queue_count = max(0, len(queue.get_queue(chat_id)) - 1)
+                try:
+                    from ArchonMusic import rich
+                    await rich.update_now_playing(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        elapsed=played,
+                        queue_count=queue_count,
+                    )
+                except Exception:
+                    # Never let a UI update interrupt playback.
+                    pass
             except asyncio.CancelledError:
                 raise
             except Exception:
